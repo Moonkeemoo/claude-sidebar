@@ -1,34 +1,53 @@
 # claude-sidebar
 
-A read-only companion pane for [Claude Code](https://claude.com/claude-code). Run it in a split
-terminal next to your session and it shows, live, what that session is doing: the current plan, the
-files it has touched, the links it produced, and the images you pasted into it. Press `Tab` and it
-turns into a picker over every Claude session on the machine — click one to open it in a new
-terminal tab, resumed.
+A companion pane for [Claude Code](https://claude.com/claude-code). Run it in a split terminal next
+to your session and it shows, live, what that session is doing — the plan it is working through, the
+files it has touched, the links it produced, and the images you pasted in. Press `Tab` and it becomes
+a list of every Claude session on the machine; pick one and it opens in a new terminal tab, resumed.
 
-It follows whichever session took the last turn, so it keeps up when you switch windows.
+It follows whichever session took the last turn, so it keeps up when you move between windows.
 
-Node only, no dependencies, one file.
+Node only, no dependencies, one file. It reads transcripts and never writes to them.
+
+## The two screens
+
+**The live view** is what you get on start. Four blocks, all following the session that is currently
+moving:
 
 ```
 ── PLAN ─────────────────────────────────────────────
-  ✓ Diagnose why Warp closed
-  ▸ Make the session rows clickable
-  · Write the README
+  ✓ Diagnose why Warp closed          done
+  ▸ Make the session rows clickable   in progress
+  · Write the README                  pending
 ── MEDIA 1 ──────────────────────────────────────────
   1.png  121K  image-cache/9de93e09…/1.png
 ── FILES 16 ─────────────────────────────────────────
-  20:27 ×11 ~/.claude/sidebar.js
+  20:27 ×11 ~/.claude/sidebar.js      ×11 = touched 11 times
   20:17 statusline.js
 ── LINKS 17 ─────────────────────────────────────────
   https://docs.warp.dev/terminal/windows/tab-configs/
+
+ Tab — сесії · q — вихід
 ```
 
-## Requirements
+`FILES 16+` with a plus means the count comes from the newest slice of a long transcript, not the
+whole of it. Greyed-out file rows are temp paths.
 
-Node 18 or newer, and a terminal that supports the alternate screen buffer and SGR mouse reporting.
-Warp, Windows Terminal, iTerm2, kitty, WezTerm and GNOME Terminal all do. Without mouse support the
-keyboard still works.
+**The session list** opens on `Tab`. Every Claude session on the machine, newest first, titled by what
+the session was actually about. Move the highlight and the blocks below it switch to that session's
+media, files and links, so you can find a conversation by what it touched rather than by its id.
+
+```
+── SESSIONS 88 ──────────────────────────────────────
+ ▸ сьогодні 20:43  Reef сессія - варп закрився
+   сьогодні 20:27  Пошук інструменту для гуманізації
+   вчора    18:02  Mono card API balance tracking
+   08.27    11:40  Renovation proto
+   …
+ ↑↓ вибір · Enter новий таб · Esc назад
+```
+
+The pane's own labels are Ukrainian.
 
 ## Install
 
@@ -36,11 +55,15 @@ keyboard still works.
 git clone https://github.com/Moonkeemoo/claude-sidebar.git
 ```
 
-There is nothing to build and nothing to install into `~/.claude`. Run the file where it landed.
+Nothing to build, nothing to install into `~/.claude`. Run the file where it landed.
 
-## Use
+You need Node 18 or newer and a terminal that supports the alternate screen and SGR mouse reporting —
+Warp, Windows Terminal, iTerm2, kitty, WezTerm and GNOME Terminal all do. Without mouse support the
+keyboard still drives everything.
 
-Split your terminal (`Ctrl+Shift+D` in Warp), narrow the new pane, and run:
+## Run it
+
+Split your terminal — `Ctrl+Shift+D` in Warp — narrow the new pane, and run one of these in it:
 
 ```powershell
 node C:\Users\tomoo\Documents\GitHub\claude-sidebar\sidebar.js
@@ -50,41 +73,46 @@ node C:\Users\tomoo\Documents\GitHub\claude-sidebar\sidebar.js
 node ~/Documents/GitHub/claude-sidebar/sidebar.js
 ```
 
-With no argument it follows the live session. Pass a session id — or any unique prefix of one — to
-pin the pane to that session instead:
+With no argument it follows the live session. Give it a session id, or any unique prefix of one, and
+it pins to that session and stops following:
 
 ```bash
 node sidebar.js 9de93e09
 ```
 
-### Keys
+## What to press
 
-| Key | Does |
+| Press | What happens |
 |---|---|
 | `Tab` or `S` | open the session list |
-| `↑` `↓`, or `k` `j` | move the selection |
-| `Enter` | open the selected session in a new terminal tab, resumed |
-| `g` / `G` | jump to the first / last session |
-| `Esc` | back to the live view |
-| `Q` or `Ctrl+C` | quit |
+| `↑` `↓`, or `k` `j` | move the highlight; the blocks below follow it |
+| `g` / `G` | jump to the newest / oldest session |
+| `Enter` | open the highlighted session in a new terminal tab, resumed |
+| `Esc` | leave the list, back to the live view |
+| `Q` | quit |
+| `Ctrl+C` | quit |
 
-`Tab` and the arrows work in any keyboard layout. The letter keys also accept their Ukrainian and
-Russian positions (`і`/`ы` for `S`, `й` for `Q`, `л`/`о` for `k`/`j`), so you do not have to switch
-layouts to drive the pane. `g` and `G` are Latin only.
+`Tab` and the arrow keys work in any keyboard layout, and so do the letters — the pane accepts them in
+their Ukrainian and Russian positions too (`і`/`ы` for `S`, `й` for `Q`, `л` and `о` for `k` and `j`).
+You never have to switch layouts to drive it. `g` and `G` are the exception, Latin only.
 
 ### Mouse
 
-Click a row to select it, click the selected row to open it, scroll the wheel to move through the
-list. While the pane has mouse reporting on, selecting text in it needs `Shift` held down — that is
-how every mouse-aware terminal program behaves.
+In the session list: **click a row to highlight it, click the highlighted row again to open it.** The
+second click does what `Enter` would have done. Scroll the wheel to move through the list three rows
+at a time.
 
-## Opening a session in a new tab
+While the pane is listening for the mouse, selecting text inside it needs `Shift` held down. That is
+how every mouse-aware terminal program behaves, not a quirk of this one.
 
-`Enter` (or a second click) writes a Warp tab config and fires `warp://tab_config/claude-resume`,
-which opens a tab in the session's own working directory running `claude --resume <id>`. The config
-is rewritten immediately before the URI fires, because `warp://` carries no parameters.
+## Opening a session in its own tab
 
-Tab configs live where Warp expects them:
+`Enter`, or that second click, opens a new Warp tab in the session's own working directory running
+`claude --resume <id>`. You are back in that conversation with its history intact.
+
+It works by writing a Warp tab config and then firing `warp://tab_config/claude-resume`. The config is
+rewritten immediately before the URI fires, because a `warp://` link carries no parameters of its own.
+The file lands in:
 
 | Platform | Directory |
 |---|---|
@@ -92,40 +120,43 @@ Tab configs live where Warp expects them:
 | macOS | `~/.warp/tab_configs/` |
 | Linux | `${XDG_DATA_HOME:-$HOME/.local/share}/warp-terminal/tab_configs/` |
 
-Only Warp is wired up. On a different terminal the keypress writes the config and nothing opens.
+Only Warp is wired up. On another terminal the keypress writes the config and nothing opens.
 
-Set `SIDEBAR_NO_LAUNCH=1` to write the tab config without firing the URI, which is how you inspect
-what it would have opened.
+To see what it would have launched without launching it, run the pane with `SIDEBAR_NO_LAUNCH=1` — the
+config gets written, the URI does not fire.
 
-## Starting Claude with the pane already open
+## Starting Claude and the pane together
 
-Warp can open a tab already split, each half running its own command, which is the whole setup in
-one click. `warp/claude.toml` is that config — Claude Code on the left, this pane on the right.
+A shell cannot split the pane it is running in, and neither can a Claude Code `SessionStart` hook — a
+hook is a child process with no say over the terminal's layout. So there is no way to make typing
+`claude` grow a sidebar next to itself. What works instead is opening a tab that is already split.
 
-Copy it into your tab config directory and edit the two `directory` lines:
+`warp/claude.toml` is that tab: Claude Code on the left, this pane on the right.
 
-```powershell
-Copy-Item warp\claude.toml "$env:APPDATA\warp\Warp\data\tab_configs\"
-```
+1. Copy it into your tab config directory, then open it and fix the two `directory` lines — they point
+   at one machine's paths and you will want your own.
 
-It then appears in the `+` menu in the tab bar. To make it what every new tab does, mark it as the
-default tab in Warp's sidecar panel; after that `Ctrl+T` opens Claude and the pane together.
+   ```powershell
+   Copy-Item warp\claude.toml "$env:APPDATA\warp\Warp\data\tab_configs\"
+   ```
 
-There is no way to trigger this by typing `claude` in an already-open pane. A shell running inside a
-pane cannot split the pane it lives in, and a Claude Code `SessionStart` hook cannot either — a hook
-runs as a child process with no say over the terminal's layout. The tab has to be opened as a tab.
+2. Click the `+` at the right of Warp's tab bar. `Claude + sidebar` is now in that menu — click it and
+   the tab opens with both halves already running.
 
-Panes in a Warp split are always equally sized, so the config gives you a half-and-half tab. Drag the
-divider once and Warp remembers it for that config.
+3. Optional: mark the config as the default tab in Warp's sidecar panel. After that `Ctrl+T` opens
+   Claude and the pane together every time, and step 2 stops being a step.
+
+Panes in a Warp split are always equally sized, so the tab opens half and half. Drag the divider once
+to narrow the pane and Warp remembers it for that config.
 
 ## Following the live session
 
-By default the pane picks the transcript with the newest modification time and re-checks once a
-second. That guesses, and it guesses wrong the moment a second session takes a turn in parallel.
+Left alone, the pane picks the transcript with the newest modification time and re-checks once a
+second. That is a guess, and it guesses wrong the moment a second session takes a turn in parallel.
 
 To make it exact, have your status line publish the session that just moved. Claude Code runs the
-status line command only for the session taking a turn, so the file it writes is authoritative.
-Add this to your `statusline.js`, wherever it has parsed its stdin JSON as `j`:
+status line command only for the session taking a turn, so what it writes is authoritative rather than
+inferred. Add this to your `statusline.js`, wherever it has already parsed its stdin JSON as `j`:
 
 ```js
 try {
@@ -143,8 +174,8 @@ try {
 } catch { /* the status line must render regardless */ }
 ```
 
-The pane reads that file, falls back to the mtime scan when it is missing or stale, and ignores it
-entirely when you pinned a session with an argument.
+The pane reads that file, falls back to the mtime scan when it is missing, and ignores it entirely
+when you pinned a session with an argument. Nothing breaks if you skip this.
 
 ## Test
 
@@ -152,28 +183,28 @@ entirely when you pinned a session with an argument.
 node sidebar.test.js
 ```
 
-It renders the picker and checks the two things a click depends on: that the session list starts on
-screen row 2, and that an SGR mouse report parses to the right button once modifier keys are masked
-off. Both read their expectations out of `sidebar.js` itself, so they cannot drift.
+It renders the session list and checks the two things a click depends on: that the list starts on
+screen row 2, and that a mouse report still resolves to the right button when `Shift` or `Ctrl` is
+held. Both read their expectations out of `sidebar.js` itself, so they cannot quietly drift from it.
 
 ## What it deliberately does not do
 
-It never writes to a transcript and never talks to Claude — it reads `~/.claude/projects/*/*.jsonl`
-and nothing else.
+It reads `~/.claude/projects/*/*.jsonl` and nothing else. It never writes to a transcript and never
+talks to Claude.
 
-Only the newest 3 MB of a transcript is parsed. Sessions reach 100 MB, and reading one whole on
-every switch costs a second and the memory to match; a truncated count is shown as `FILES 21+`.
+Only the newest 3 MB of a transcript is parsed. Sessions reach 100 MB, and reading one whole on every
+switch costs a second and the memory to match — hence the `+` on truncated counts.
 
-Images are listed by name, size and path, not drawn. Terminal image protocols are not worth the
-dependency here, and Warp on Windows does not support them anyway.
+Images are listed by name, size and path, not drawn. Inline image protocols would cost a dependency,
+and Warp on Windows does not support them anyway.
 
 ## Environment variables
 
 | Variable | Effect |
 |---|---|
 | `SIDEBAR_ONCE=1` | render the live view once and exit |
-| `SIDEBAR_ONCE=pick` | render the picker once and exit |
+| `SIDEBAR_ONCE=pick` | render the session list once and exit |
 | `SIDEBAR_NO_LAUNCH=1` | write the tab config, do not fire the URI |
 
-The `SIDEBAR_ONCE` modes skip the alternate screen and mouse reporting so their output pipes
-cleanly.
+The `SIDEBAR_ONCE` modes skip the alternate screen and the mouse, so their output pipes cleanly into
+`grep` and friends.
