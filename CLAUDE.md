@@ -1,6 +1,6 @@
 # Working on this repo
 
-`sidebar.js` is one file, ~730 lines, no dependencies, and it should stay that way. It is a viewer:
+`sidebar.js` is one file, ~950 lines, no dependencies, and it should stay that way. It is a viewer:
 it reads `~/.claude/projects/*/*.jsonl` and writes nothing except a Warp tab config. Any change that
 makes it write to a transcript is wrong.
 
