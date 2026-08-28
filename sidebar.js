@@ -3,11 +3,13 @@
 //
 //   node sidebar.js                  follow the session that is live right now
 //   node sidebar.js <session-id>     pin one session
-//   node sidebar.js --install [dir]  write the Warp tab that opens Claude beside
-//                                    this pane; dir is where Claude starts
+//   node sidebar.js --install [dir]  set up the split that opens Claude beside
+//                                    this pane; dir is where Claude starts. A
+//                                    third argument overrides where the Ghostty
+//                                    launcher script is written.
 //
-// Keys:  Tab or S  session list, Tab again closes it · ↑↓ move · Enter open in
-//        a new Warp tab · Esc back · Q quit
+// Keys:  Tab or S  session list, Tab again closes it · ↑↓ move · Enter open the
+//        session beside you — a Warp tab, a Ghostty split · Esc back · Q quit
 // Mouse: the row under the pointer lights up when it opens something — click a
 //        session row to open that session, a link or a media row to open that.
 //        Wheel scrolls. Selecting text needs Shift, as in any mouse-aware TUI.
@@ -535,11 +537,62 @@ function tabDir() {
 const TABDIR = tabDir();
 const TABNAME = 'claude-resume';
 
+// ---- Ghostty ----
+// Ghostty cannot describe a split layout anywhere: not in its config, not on a
+// keybind — a chained keybind runs every action against the pane that had focus
+// when it started, so "split, then type into the split" is impossible by
+// design. It has no URI scheme, and its CLI cannot reach a running instance on
+// macOS; that was prototyped and declined. What it has, since 1.3, is
+// AppleScript that can split a terminal and type into the result. That is the
+// entire mechanism, and everything below is built on those two verbs.
+const GHOSTTY = process.env.TERM_PROGRAM === 'ghostty';
+const shq = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
+const osaStr = (s) => '"' + String(s).replace(/["\\]/g, '\\$&') + '\\n"';
+
+function ghosttyScript(cmd, direction) {
+  return [
+    'tell application "Ghostty"',
+    '  set t to focused terminal of selected tab of front window',
+    '  set s to split t direction ' + direction,
+    '  input text ' + osaStr(cmd) + ' to s',
+    'end tell',
+  ].join('\n');
+}
+
+function ghosttySplit(cmd, direction) {
+  const child = spawn('osascript', ['-e', ghosttyScript(cmd, direction)], { detached: true, stdio: 'ignore' });
+  child.unref();
+}
+
+// Claude goes into the new pane on the left, so the halves land the way they do
+// under Warp and the focus lands where you are about to type. The shell that ran
+// this becomes the pane.
+function installGhostty(work, target) {
+  const file = target || path.join(HOME, '.local', 'bin', 'claude-sidebar');
+  const body = [
+    '#!/bin/sh',
+    '# Claude Code with the sidebar beside it. Written by `sidebar.js --install`;',
+    '# rerun that rather than editing the paths here.',
+    'osascript -e ' + shq(ghosttyScript('cd ' + shq(work) + ' && claude', 'left')) + ' >/dev/null',
+    'exec node ' + shq(path.join(__dirname, path.basename(__filename))),
+    '',
+  ].join('\n');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, body, 'utf8');
+  fs.chmodSync(file, 0o755);
+  console.log("Записано " + file);
+  console.log("Claude стартуватиме в " + work);
+  console.log("Відкрий новий таб у Ghostty і запусти: " + file);
+  console.log("Якщо " + path.dirname(file) + " не в PATH — додай, і команда зватиметься claude-sidebar.");
+  console.log("Перший запуск попросить дозвіл на автоматизацію Ghostty — це AppleScript, інакше спліт не відкриється.");
+}
+
 // The paths inside a tab config are absolute, so one committed to a repo is only
 // ever right on the machine that wrote it. `--install` writes the config for
 // wherever this copy actually landed, which is the whole of the setup.
-function install(where) {
+function install(where, target) {
   const work = path.resolve(where || path.dirname(__dirname));
+  if (GHOSTTY) return installGhostty(work, target);
   const toml = [
     "name = 'Claude + sidebar'",
     '',
@@ -582,6 +635,13 @@ function cwdOf(s) {
 
 function openInTab(s) {
   const dir = cwdOf(s);
+  // Ghostty has no tab config to write and nothing to fire a URI at, so the
+  // session opens as a split of the window you are already in.
+  if (GHOSTTY) {
+    const cmd = 'cd ' + shq(dir) + ' && claude --resume ' + s.id;
+    if (!process.env.SIDEBAR_NO_LAUNCH) ghosttySplit(cmd, 'right');
+    return cmd;
+  }
   const title = (s.title || s.id.slice(0, 8)).replace(/'/g, '').slice(0, 60);
   // TOML literal strings: no escaping, which is what Windows paths need
   // The same split the pane itself was opened in: the resumed session gets its
@@ -1007,7 +1067,7 @@ function onWheel(y, step) {
 // ---- run ----
 // Before the transcript check: a machine that has never run Claude has none, and
 // installing the tab is exactly what you do there first.
-if (arg === '--install') { install(process.argv[3]); process.exit(0); }
+if (arg === '--install') { install(process.argv[3], process.argv[4]); process.exit(0); }
 if (!file) { console.error('Транскрипт не знайдено в ' + PROJECTS); process.exit(1); }
 // Alternate screen buffer. Without it every \x1b[H\x1b[2J repaint is appended to
 // the host terminal's scrollback instead of replacing it — in a block terminal

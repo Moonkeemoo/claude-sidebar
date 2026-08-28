@@ -126,6 +126,28 @@ assert.ok(/hitAt\(hover\)/.test(src), 'the highlight stopped checking that the r
 // those, so the fallback through it is the whole feature.
 assert.ok(/blockAt\[y - 1\] === ALIVE/.test(src), 'tapping the session block no longer falls back to its block');
 
+// ---- the Ghostty split survives two layers of quoting ----
+// A path goes into a shell single-quoted string, which goes into an AppleScript
+// double-quoted string, which goes into an -e argument. Get either layer wrong
+// and osascript either fails or runs something that was never intended — the
+// directory name is the part a user controls.
+// An arrow assigned to a const does not survive eval the way a function
+// declaration does, so these are lifted as expressions.
+const shq = eval('(' + src.match(/const shq = (.+);/)[1] + ')');
+const osaStr = eval('(' + src.match(/const osaStr = (.+);/)[1] + ')');
+eval(src.match(/function ghosttyScript[\s\S]*?\n\}/)[0]);
+
+assert.strictEqual(shq("O'Brien/code"), "'O'\\''Brien/code'", 'a quote must close, escape and reopen');
+assert.strictEqual(osaStr('say "hi"'), '"say \\"hi\\"\\n"', 'quotes inside AppleScript text need escaping');
+assert.strictEqual(osaStr('back\\slash'), '"back\\\\slash\\n"', 'so do backslashes');
+const gs = ghosttyScript('cd ' + shq("/Users/o'brien/code") + ' && claude', 'right');
+assert.ok(/split t direction right$/m.test(gs), 'the direction is not in the script: ' + gs);
+// The shell needs '\'' to put a quote inside a quoted word; AppleScript has to
+// hand it that backslash, so it must arrive doubled. Lose the doubling and the
+// shell sees '' — the path silently splits in two.
+assert.ok(gs.includes("'\\\\''"), 'the shell escape did not survive into AppleScript: ' + gs);
+assert.strictEqual(gs.split('\n').length, 5, 'the script must stay one tell block: ' + gs);
+
 // ---- a stranded browser is one nobody opened and nobody will close ----
 // The block only ever appears when something is genuinely left over, so the
 // question is entirely what gets let in: the browser you are reading this in

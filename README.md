@@ -192,9 +192,13 @@ how every mouse-aware terminal program behaves, not a quirk of this one.
 
 ## Opening a session in its own tab
 
-`Enter`, or a click on the row, opens a new Warp tab split the same way this one is: the session's own
-working directory running `claude --resume <id>`, with a pane of this program beside it. You are back
-in that conversation with its history intact and still watching it.
+`Enter`, or a click on the row, opens the session in its own working directory running
+`claude --resume <id>`. You are back in that conversation with its history intact.
+
+In Warp that is a new tab, split the same way this one is, with a pane of this program beside it — so
+the resumed session comes with its own companion rather than sending you back here to change what this
+one watches. In Ghostty it is a split of the window you are already in, because Ghostty has no tab
+config to write and nothing to fire a URI at; see [Ghostty](#ghostty) for why.
 
 It works by writing a Warp tab config and then firing `warp://tab_config/claude-resume`. The config is
 rewritten immediately before the URI fires, because a `warp://` link carries no parameters of its own.
@@ -206,10 +210,11 @@ The file lands in:
 | macOS | `~/.warp/tab_configs/` |
 | Linux | `${XDG_DATA_HOME:-$HOME/.local/share}/warp-terminal/tab_configs/` |
 
-Only Warp is wired up. On another terminal the keypress writes the config and nothing opens.
+Warp and Ghostty are wired up; the pane tells them apart by `TERM_PROGRAM`. Anywhere else the keypress
+writes the Warp config and nothing opens.
 
 To see what it would have launched without launching it, run the pane with `SIDEBAR_NO_LAUNCH=1` — the
-config gets written, the URI does not fire.
+config gets written, the URI does not fire and no split opens.
 
 ## Starting Claude and the pane together
 
@@ -256,6 +261,26 @@ type = 'terminal'
 directory = '/Users/you/Documents/GitHub/claude-sidebar'
 commands = ['node sidebar.js']
 ```
+
+### Ghostty
+
+Run the same command from inside Ghostty and it writes a launcher instead, at `~/.local/bin/claude-sidebar`
+— pass a third argument to put it somewhere else. Open a Ghostty tab, run `claude-sidebar`, and the
+window splits: Claude on the left, this pane on the right, which is the shell you ran it from.
+
+It is a script rather than a config because Ghostty has nowhere to put a layout. Its config has no
+session or workspace key; `new_split` takes a direction and nothing else; and a chained keybind cannot
+type into a split it just made — every action in a chain runs against the pane that had focus when the
+chain started. There is no `ghostty://` scheme, and the CLI's "open a window in a running instance" is
+GTK-only; the macOS version of that was prototyped and closed as not planned. What is left, and what
+this uses, is the AppleScript support added in **Ghostty 1.3**: `split` a terminal, `input text` into
+the result.
+
+Two consequences worth knowing. macOS will ask once for permission to control Ghostty — that is the
+Automation prompt, and declining it leaves the launcher opening no split at all. And AppleScript is
+still marked a preview feature by Ghostty's maintainers, with breaking changes expected in 1.4, so
+this is the part of the setup most likely to need a revisit. `macos-applescript = false` in the
+Ghostty config turns it off entirely.
 
 Panes in a Warp split are always equally sized, so the tab opens half and half. Drag the divider once
 to narrow the pane and Warp remembers it for that config.
