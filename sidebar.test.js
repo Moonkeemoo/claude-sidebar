@@ -120,7 +120,11 @@ assert.strictEqual(parse('hello'), null, 'plain text is not a mouse event');
 // Without 1003 no motion is reported at all, so nothing ever lights up and the
 // pane silently goes back to "hover and see nothing".
 assert.ok(/\?1003h/.test(src), 'motion reporting is off — no row can highlight under the pointer');
-assert.ok(/rowHits\[hover - 1\]/.test(src), 'the highlight stopped checking that the row still opens something');
+assert.ok(/hitAt\(hover\)/.test(src), 'the highlight stopped checking that the row still does something');
+// The live view's session block opens the list even where there is no row to
+// click: its rule, and its line saying nothing has moved. Only blockAt reaches
+// those, so the fallback through it is the whole feature.
+assert.ok(/blockAt\[y - 1\] === ALIVE/.test(src), 'tapping the session block no longer falls back to its block');
 
 assert.ok(/target\.startsWith\('http:\/\/'\)/.test(src), 'openExternal lost its http guard');
 assert.ok(/fs\.existsSync\(target\)/.test(src), 'openExternal lost its existence guard');

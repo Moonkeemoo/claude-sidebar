@@ -137,8 +137,10 @@ click a file or a pasted image and it opens in whatever your system opens that w
 the live view and in the session list alike, so you can find an old conversation, see the screenshot
 you pasted into it, and open it without leaving the pane.
 
-In the session list, **a click on a session row opens it** — the same thing `Enter` does, without
-moving the highlight there first.
+In the live view, **a click anywhere in the СЕСІЇ block opens the session list**, on the session you
+clicked. That includes its header and the line saying nothing has moved, so the block is one target
+however empty it is. In the list itself, **a click on a session row opens that session** — the same
+thing `Enter` does, without moving the highlight there first.
 
 **The wheel scrolls whatever the pointer is over, and only that.** Put it on ФАЙЛИ and the file list
 moves while the session list above stays where it was; move to ЛІНКИ and that one moves instead. Each

@@ -484,6 +484,7 @@ let blockAt = {};
 // wheel move the block under the pointer while the rest of the pane stays put.
 const scroll = {};
 const LIST = 'SESSIONS';
+const ALIVE = 'ЖИВІ';
 
 // One block: its rule, then as many item rows as `room` allows, starting at this
 // block's own offset. Items are { text, open?, session? }. `focus`, when given,
@@ -507,6 +508,7 @@ function panel(out, key, label, items, room, count, focus, empty) {
   for (const it of items.slice(off, off + room)) {
     if (it.open) rowHits[out.length] = { open: it.open };
     if (it.session != null) rowHits[out.length] = { session: it.session };
+    if (it.pick) rowHits[out.length] = { pick: it.pick };
     blockAt[out.length] = key;
     out.push(clip(it.text, W()));
   }
@@ -599,7 +601,7 @@ function paint(out, footer) {
   // so a row that stopped being clickable simply stops lighting up. strip()
   // first: a reverse that runs into the row's own \x1b[0m ends there and leaves
   // half a bar behind.
-  if (rowHits[hover - 1]) out[hover - 1] = sgr('7', strip(out[hover - 1]));
+  if (hitAt(hover)) out[hover - 1] = sgr('7', strip(out[hover - 1]));
   if (process.env.SIDEBAR_HITS) process.stderr.write(JSON.stringify({ hits: rowHits, blocks: blockAt }));
   process.stdout.write('\x1b[H\x1b[2J' + out.join('\n') + '\n');
 }
@@ -614,10 +616,10 @@ function renderWatch() {
     const txt = (td.status === 'in_progress' && td.activeForm) || td.content || '';
     return { text: '  ' + mark + ' ' + (td.status === 'completed' ? dim(txt) : txt) };
   });
-  const live_ = activeSessions().map((s) => ({ text: activeRow(s, s.path === file) }));
+  const live_ = activeSessions().map((s) => ({ pick: s.path, text: activeRow(s, s.path === file) }));
 
   layout(out, [
-    { key: 'ЖИВІ', label: 'СЕСІЇ', items: live_, empty: 'нічого не рухалось останні 3 год' },
+    { key: ALIVE, label: 'СЕСІЇ', items: live_, empty: 'нічого не рухалось останні 3 год' },
     { key: 'ПЛАН', label: 'ПЛАН', items: todos, empty: 'немає активного плану' },
     ...bodyBlocks(live, live.cwd),
   ], H() - 2);
@@ -659,19 +661,40 @@ const draw = () => (mode === 'pick' ? renderPick() : renderWatch());
 // frame changed — motion is reported per cell of travel, and repainting the pane
 // on each of those would put a screenful a millisecond into a terminal that then
 // has to draw them all.
+// The whole СЕСІЇ block of the live view is a way into the session list — its
+// rows through rowHits, its rule and its "nothing moved" line through blockAt,
+// which is the only map that covers those. Tapping the block you are already
+// reading is a shorter path to the list than remembering that Tab opens it.
+function hitAt(y) {
+  const hit = rowHits[y - 1];
+  if (hit) return hit;
+  return mode === 'watch' && blockAt[y - 1] === ALIVE ? { pick: true } : null;
+}
+
+// Open the list with the cursor already on the session that was tapped. A row
+// of the live block carries its transcript path; the rule carries nothing, and
+// the list opens where it always did.
+function openPicker(at) {
+  sessions = listSessions();
+  const i = typeof at === 'string' ? sessions.findIndex((s) => s.path === at) : -1;
+  cursor = i < 0 ? 0 : i;
+  mode = 'pick';
+}
+
 function onMouse(btn, y, press) {
   const b = btn & ~28;                       // strip shift/alt/ctrl
   if (b === 64 || b === 65) { onWheel(y, b === 64 ? -3 : 3); return true; }
   if (b & 32) {                              // motion, button held or not
-    const at = rowHits[y - 1] ? y : -1;
+    const at = hitAt(y) ? y : -1;
     if (at === hover) return false;
     hover = at;
     return true;
   }
   if (!press || b !== 0) return false;
-  const hit = rowHits[y - 1];
+  const hit = hitAt(y);
   if (!hit) return false;
   if (hit.open) { openExternal(hit.open); return false; }
+  if (hit.pick) { openPicker(hit.pick); return true; }
   if (hit.session == null) return false;
   cursor = hit.session;
   openInTab(sessions[cursor]);
@@ -724,7 +747,7 @@ if (process.stdin.isTTY) {
     }
     if (k === '\u0003') return bye();
     if (mode === 'watch') {
-      if (K_LIST.has(k)) { sessions = listSessions(); cursor = 0; mode = 'pick'; draw(); }
+      if (K_LIST.has(k)) { openPicker(); draw(); }
       else if (K_QUIT.has(k)) bye();
       return;
     }
