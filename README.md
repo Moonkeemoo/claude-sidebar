@@ -323,6 +323,27 @@ One switch defeats all of this: `macos-applescript = false` in `~/.config/ghostt
 AppleScript off wholesale, and then no permission helps. It is on by default; you would know if you
 had turned it off.
 
+#### When a click opens nothing
+
+Run this, in the Ghostty pane, and paste back what it prints:
+
+```bash
+node sidebar.js --check
+```
+
+It says which terminal it thinks it is in and why, then actually asks Ghostty to
+open a split saying `sidebar ok`, and prints osascript's exit code and error
+verbatim. Three answers, three different problems:
+
+| What it prints | What is wrong |
+|---|---|
+| `розпізнано  нічого` | the terminal was not identified — set `SIDEBAR_TERMINAL=ghostty` |
+| a non-zero code with `Not authorized to send Apple events` | the Automation permission above |
+| code `0`, but no split appears | AppleScript ran and Ghostty ignored it — check the version is 1.3+ |
+
+The pane reports the same failure on its own: when osascript refuses, the reason
+replaces the session list's footer instead of vanishing.
+
 #### Why a script and not a config
 
 Ghostty has nowhere to put a layout. Its config has no session or workspace key, `new_split` takes a

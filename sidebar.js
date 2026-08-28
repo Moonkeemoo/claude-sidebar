@@ -7,6 +7,8 @@
 //                                    this pane; dir is where Claude starts. A
 //                                    third argument overrides where the Ghostty
 //                                    launcher script is written.
+//   node sidebar.js --check          say which terminal this is and try to open
+//                                    a split, printing whatever comes back
 //
 // Keys:  Tab or S  session list, Tab again closes it · ↑↓ move · Enter open the
 //        session beside you — a Warp tab, a Ghostty split · Esc back · Q quit
@@ -20,7 +22,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { spawn } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 
 const HOME = os.homedir();
 const PROJECTS = path.join(HOME, '.claude', 'projects');
@@ -416,15 +418,20 @@ function slow(key, ttl, run) {
   return at.value;
 }
 
+// stderr is kept, not discarded: the one command here that can fail in a way a
+// user must hear about — osascript, refused permission to drive Ghostty — says
+// so only there, and throwing it away is how a click becomes "nothing happens".
 function capture(cmd, args, cwd) {
   return new Promise((done) => {
     let out = '';
+    let err = '';
     let p;
-    try { p = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }); }
-    catch { return done(''); }
+    try { p = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }); }
+    catch (e) { return done({ out: '', err: String(e.message || e), code: -1 }); }
     p.stdout.on('data', (d) => { out += d; });
-    p.on('error', () => done(''));
-    p.on('close', () => done(out));
+    p.stderr.on('data', (d) => { err += d; });
+    p.on('error', (e) => done({ out, err: String(e.message || e), code: -1 }));
+    p.on('close', (code) => done({ out, err, code }));
   });
 }
 
@@ -463,7 +470,7 @@ async function dirSize(dir) {
 }
 
 async function gitState(dir) {
-  const out = await capture('git', ['status', '--porcelain=v1', '-b'], dir);
+  const { out } = await capture('git', ['status', '--porcelain=v1', '-b'], dir);
   if (!out) return null;
   const lines = out.split('\n').filter((l) => l.trim());
   const head = lines.shift() || '';
@@ -486,7 +493,7 @@ async function orphans() {
   if (process.platform !== 'win32') return [];
   const q = "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' or Name='msedge.exe' or Name='chromium.exe'\""
     + " | Select-Object Name,CommandLine,WorkingSetSize,CreationDate | ConvertTo-Json -Compress";
-  const out = await capture('powershell', ['-NoProfile', '-NonInteractive', '-Command', q]);
+  const { out } = await capture('powershell', ['-NoProfile', '-NonInteractive', '-Command', q]);
   let rows; try { rows = JSON.parse(out); } catch { return []; }
   return orphanRows(Array.isArray(rows) ? rows : rows ? [rows] : [], Date.now());
 }
@@ -571,9 +578,44 @@ function ghosttyScript(cmd, direction) {
   ].join('\n');
 }
 
+// What osascript says when it refuses, kept so the pane can show it. This is the
+// one call in the program that fails for a reason a person has to act on —
+// macOS withholding permission to drive Ghostty, or a Ghostty too old to have
+// `split` — and it says so on stderr and nowhere else.
+let openError = null;
+
 function ghosttySplit(cmd, direction) {
-  const child = spawn('osascript', ['-e', ghosttyScript(cmd, direction)], { detached: true, stdio: 'ignore' });
-  child.unref();
+  capture('osascript', ['-e', ghosttyScript(cmd, direction)]).then((r) => {
+    openError = r.code === 0 ? null : (r.err.trim().split('\n')[0] || 'osascript: код ' + r.code);
+    try { draw(); } catch { }
+  });
+}
+
+// A one-command answer to "the click does nothing": everything the pane decides
+// in silence, said out loud, and then the mechanism actually exercised.
+function check() {
+  console.log('TERM_PROGRAM      ' + (process.env.TERM_PROGRAM || '(порожньо)'));
+  const marks = Object.keys(process.env).filter((k) => /^(GHOSTTY|WARP)_/.test(k)).sort();
+  console.log('змінні термінала  ' + (marks.length ? marks.slice(0, 5).join(', ') : '(жодної)'));
+  console.log('SIDEBAR_TERMINAL  ' + (process.env.SIDEBAR_TERMINAL || '(не задано)'));
+  console.log('розпізнано        ' + (GHOSTTY ? 'Ghostty' : WARP ? 'Warp' : 'нічого — сесії не відкриватимуться'));
+  if (!GHOSTTY) {
+    console.log('');
+    console.log('Спліт перевіряю лише під Ghostty. Якщо ти в ньому, а тут написано інше —');
+    console.log('запусти ще раз як: SIDEBAR_TERMINAL=ghostty node sidebar.js --check');
+    return;
+  }
+  const r = spawnSync('osascript', ['-e', ghosttyScript("echo 'sidebar ok'", 'right')], { encoding: 'utf8' });
+  console.log('');
+  console.log('osascript код     ' + r.status);
+  if (r.error) console.log('запуск            ' + r.error.message);   // no osascript at all
+  if ((r.stdout || '').trim()) console.log('вивід             ' + r.stdout.trim());
+  if ((r.stderr || '').trim()) console.log('помилка           ' + r.stderr.trim());
+  console.log('');
+  console.log(r.status === 0
+    ? 'Праворуч мав відкритись спліт зі словами «sidebar ok». Якщо його немає — AppleScript'
+      + '\nвідпрацював, але Ghostty нічого не зробив, і це вже питання до його версії.'
+    : 'Спліт не відкрився, і текст помилки вище — відповідь чому.');
 }
 
 // Claude goes into the new pane on the left, so the halves land the way they do
@@ -1011,10 +1053,13 @@ function renderPick() {
     ...(st ? bodyBlocks(st, st.cwd) : []),
   ], avail);
 
-  // Saying so beats a keypress that does nothing and explains nothing.
-  paint(out, dim(GHOSTTY || WARP
-    ? ' ↑↓ вибір · клік або Enter відкриває · колесо гортає · Tab назад'
-    : ' ↑↓ вибір · цей термінал сесій не відкриває · колесо гортає · Tab назад'));
+  // A refusal is reported where the click happened, and saying the terminal is
+  // unknown beats offering a keypress that does nothing and explains nothing.
+  paint(out, openError
+    ? sgr('33', clip(' ' + openError, W()))
+    : dim(GHOSTTY || WARP
+      ? ' ↑↓ вибір · клік або Enter відкриває · колесо гортає · Tab назад'
+      : ' ↑↓ вибір · цей термінал сесій не відкриває · колесо гортає · Tab назад'));
 }
 
 let mode = 'watch';
@@ -1086,6 +1131,7 @@ function onWheel(y, step) {
 // ---- run ----
 // Before the transcript check: a machine that has never run Claude has none, and
 // installing the tab is exactly what you do there first.
+if (arg === '--check') { check(); process.exit(0); }
 if (arg === '--install') { install(process.argv[3], process.argv[4]); process.exit(0); }
 if (!file) { console.error('Транскрипт не знайдено в ' + PROJECTS); process.exit(1); }
 // Alternate screen buffer. Without it every \x1b[H\x1b[2J repaint is appended to
