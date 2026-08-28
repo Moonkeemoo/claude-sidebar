@@ -105,7 +105,7 @@ one click. `warp/claude.toml` is that config — Claude Code on the left, this p
 Copy it into your tab config directory and edit the two `directory` lines:
 
 ```powershell
-copy warp\claude.toml "$env:APPDATA\warp\Warp\data	ab_configs\"
+Copy-Item warp\claude.toml "$env:APPDATA\warp\Warp\data\tab_configs\"
 ```
 
 It then appears in the `+` menu in the tab bar. To make it what every new tab does, mark it as the
