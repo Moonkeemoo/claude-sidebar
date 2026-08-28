@@ -269,8 +269,8 @@ to narrow the pane and Warp remembers it for that config.
 
 ### Ghostty
 
-Run the same command, but run it **from inside Ghostty** — the installer picks what to write from
-`TERM_PROGRAM`, so doing this in another terminal quietly gets you a Warp config instead:
+Run the same command, but run it **from inside Ghostty** — the installer works out which terminal it
+is in and writes accordingly, so doing this in another one gets you a Warp config instead:
 
 ```bash
 node sidebar.js --install ~/Documents/GitHub
@@ -297,6 +297,15 @@ and will not follow it.
 This needs **Ghostty 1.3 or newer**, which is where AppleScript arrived. Ghostty's About window has the
 version; `ghostty +version` also works if the binary is on your `PATH`, which the app does not do for
 you.
+
+The pane works out which terminal it is in from `TERM_PROGRAM` and from the variables a terminal
+stamps on its own shells. If it ever guesses wrong the symptom is specific: the session list says
+`цей термінал сесій не відкриває` along the bottom, or `Enter` opens nothing. Settle it by hand —
+`SIDEBAR_TERMINAL=ghostty` in the environment, or in front of any single command:
+
+```bash
+SIDEBAR_TERMINAL=ghostty node sidebar.js --install ~/Documents/GitHub
+```
 
 #### The permission it asks for once
 
@@ -391,6 +400,7 @@ and Warp on Windows does not support them anyway.
 | `SIDEBAR_ONCE=1` | render the live view once and exit |
 | `SIDEBAR_ONCE=pick` | render the session list once and exit |
 | `SIDEBAR_NO_LAUNCH=1` | write the tab config, do not fire the URI |
+| `SIDEBAR_TERMINAL=ghostty` \| `warp` | say which terminal this is instead of working it out |
 | `SIDEBAR_HITS=1` | dump the row-to-click and row-to-block maps to stderr on every frame |
 | `COLUMNS`, `LINES` | the pane size to lay out for when stdout is not a terminal |
 

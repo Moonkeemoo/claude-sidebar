@@ -545,7 +545,19 @@ const TABNAME = 'claude-resume';
 // macOS; that was prototyped and declined. What it has, since 1.3, is
 // AppleScript that can split a terminal and type into the result. That is the
 // entire mechanism, and everything below is built on those two verbs.
-const GHOSTTY = process.env.TERM_PROGRAM === 'ghostty';
+// Which terminal is on the other side decides how a session opens, and guessing
+// it wrong fails the way everything else here warns about: no split, no tab, no
+// error. So the guess is made from more than one signal — `TERM_PROGRAM`, or any
+// variable the terminal stamps on its own shells — and `SIDEBAR_TERMINAL=ghostty`
+// or `=warp` overrides the lot when a terminal turns out to say something new.
+const FORCED = (process.env.SIDEBAR_TERMINAL || '').toLowerCase();
+const stamped = (prefix) => Object.keys(process.env).some((k) => k.startsWith(prefix));
+const GHOSTTY = FORCED
+  ? FORCED === 'ghostty'
+  : /ghostty/i.test(process.env.TERM_PROGRAM || '') || stamped('GHOSTTY_');
+const WARP = FORCED
+  ? FORCED === 'warp'
+  : /warp/i.test(process.env.TERM_PROGRAM || '') || stamped('WARP_');
 const shq = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
 const osaStr = (s) => '"' + String(s).replace(/["\\]/g, '\\$&') + '\\n"';
 
@@ -620,6 +632,10 @@ function install(where, target) {
   console.log("Записано " + path.join(TABDIR, 'claude.toml'));
   console.log("Claude стартуватиме в " + work);
   console.log("Відкрий меню поруч із + у Warp — там зʼявився «Claude + sidebar».");
+  if (!WARP) {
+    console.log("Термінал не розпізнано, тому записано конфіг для Warp.");
+    console.log("Для Ghostty: SIDEBAR_TERMINAL=ghostty node sidebar.js --install " + work);
+  }
 }
 
 function cwdOf(s) {
@@ -995,7 +1011,10 @@ function renderPick() {
     ...(st ? bodyBlocks(st, st.cwd) : []),
   ], avail);
 
-  paint(out, dim(' ↑↓ вибір · клік або Enter відкриває · колесо гортає · Tab назад'));
+  // Saying so beats a keypress that does nothing and explains nothing.
+  paint(out, dim(GHOSTTY || WARP
+    ? ' ↑↓ вибір · клік або Enter відкриває · колесо гортає · Tab назад'
+    : ' ↑↓ вибір · цей термінал сесій не відкриває · колесо гортає · Tab назад'));
 }
 
 let mode = 'watch';
