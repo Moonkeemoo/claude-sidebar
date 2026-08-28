@@ -195,7 +195,7 @@ const scanCache = new Map();
 function titleOf(f, size) {
   const lines = (s) => s.split('\n').filter((l) => l.trim());
   for (const l of lines(readSlice(f, Math.max(0, size - 262144), Math.min(size, 262144))).reverse()) {
-    try { const d = JSON.parse(l); if (d.type === 'ai-title' && d.aiTitle) return d.aiTitle; } catch { }
+    try { const d = JSON.parse(l); if (d.type === 'ai-title' && d.aiTitle) return d.aiTitle.replace(/\s+/g, ' ').trim(); } catch { }
   }
   for (const l of lines(readSlice(f, 0, Math.min(size, 131072)))) {
     try {
@@ -206,6 +206,78 @@ function titleOf(f, size) {
     } catch { }
   }
   return null;
+}
+
+function titleFor(p, size, mtimeMs) {
+  const hit = titleCache.get(p);
+  if (hit && hit.mtimeMs === mtimeMs) return hit.title;
+  let title = null;
+  try { title = titleOf(p, size); } catch { }
+  titleCache.set(p, { mtimeMs, title });
+  return title;
+}
+
+// The one argument worth showing next to a tool's name.
+function toolArg(call) {
+  const i = call.input || {};
+  const one = i.command || i.file_path || i.path || i.pattern || i.description || i.url || '';
+  const s = String(one).replace(/\s+/g, ' ').trim();
+  if (!s) return '';
+  return ' ' + (/[\\/]/.test(s) && !i.command ? path.basename(s) : s);
+}
+
+// What a session is doing, read from the end of its transcript. Walking back to
+// the newest assistant record answers it: a pending tool call means the session
+// is still moving, no tool call means the turn ended and it is waiting on its
+// human. That second state is the one worth seeing across a row of sessions —
+// it is a session that stopped and will not restart on its own.
+const stateCache = new Map();
+function stateOf(s) {
+  const hit = stateCache.get(s.path);
+  if (hit && hit.mtime === s.mtime) return hit.st;
+  const st = { waiting: false, tool: null };
+  try {
+    const from = Math.max(0, s.size - 65536);
+    const lines = readSlice(s.path, from, Math.min(s.size, 65536)).split('\n');
+    if (from > 0) lines.shift();                    // the first line is cut in half
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].trim()) continue;
+      let d; try { d = JSON.parse(lines[i]); } catch { continue; }
+      if (d.type !== 'assistant') continue;
+      const c = (d.message || {}).content;
+      const call = Array.isArray(c) && c.find((b) => b && b.type === 'tool_use');
+      st.tool = call ? call.name + toolArg(call) : null;
+      st.waiting = !call;
+      break;
+    }
+  } catch { }
+  stateCache.set(s.path, { mtime: s.mtime, st });
+  return st;
+}
+
+// The project a session belongs to. Read from the transcript rather than decoded
+// out of the directory name, which mangles any project whose name holds a dash.
+const cwdCache = new Map();
+function projOf(s) {
+  if (!cwdCache.has(s.path)) cwdCache.set(s.path, path.basename(cwdOf(s)));
+  return cwdCache.get(s.path);
+}
+
+// Sessions touched recently, with what each is doing. listSessions stats every
+// transcript on the machine, so this is refreshed on a timer rather than on
+// every frame.
+const RECENT = 3 * 3600 * 1000;
+let activeCache = null;
+let activeAt = 0;
+function activeSessions() {
+  const now = Date.now();
+  if (activeCache && now - activeAt < 3000) return activeCache;
+  activeAt = now;
+  activeCache = listSessions()
+    .filter((s) => now - s.mtime < RECENT)
+    .slice(0, 12)
+    .map((s) => Object.assign(s, { state: stateOf(s) }));
+  return activeCache;
 }
 
 function listSessions() {
@@ -220,11 +292,7 @@ function listSessions() {
       const p = path.join(dir, name);
       let st; try { st = fs.statSync(p); } catch { continue; }
       if (st.size < 2048) continue;
-      const hit = titleCache.get(p);
-      let title;
-      if (hit && hit.mtimeMs === st.mtimeMs) title = hit.title;
-      else { try { title = titleOf(p, st.size); } catch { title = null; } titleCache.set(p, { mtimeMs: st.mtimeMs, title }); }
-      out.push({ id: name.replace(/\.jsonl$/, ''), path: p, mtime: st.mtimeMs, size: st.size, title });
+      out.push({ id: name.replace(/\.jsonl$/, ''), path: p, mtime: st.mtimeMs, size: st.size, title: titleFor(p, st.size, st.mtimeMs) });
     }
   }
   return out.sort((a, b) => b.mtime - a.mtime);
@@ -304,8 +372,59 @@ function openInTab(s) {
 }
 
 // ---- rendering ----
-const W = () => Math.max(28, (process.stdout.columns || 60) - 1);
-const H = () => Math.max(10, process.stdout.rows || 24);
+// COLUMNS and LINES are the fallback when stdout is not a terminal, which is how
+// the layout gets measured at sizes nobody has a window for.
+const W = () => Math.max(28, (process.stdout.columns || +process.env.COLUMNS || 60) - 1);
+const H = () => Math.max(10, process.stdout.rows || +process.env.LINES || 24);
+
+// Truncate to `w` visible columns with the ANSI codes left intact. A row wider
+// than the pane wraps, a wrapped row costs two screen lines, and from there
+// every click below it lands one row off. Nothing reaches the screen unclipped.
+function clip(s, w) {
+  let out = '', cut = '', n = 0, i = 0;
+  while (i < s.length) {
+    if (s.charCodeAt(i) === 27) {              // an escape costs no width
+      const j = s.indexOf('m', i);
+      if (j < 0) break;
+      out += s.slice(i, j + 1); i = j + 1; continue;
+    }
+    if (s.charCodeAt(i) < 32) { i++; continue; }  // a newline inside a row would
+                                                  // split it into two screen rows
+    if (n === w - 1) cut = out;                // where the ellipsis would go
+    if (n === w) return cut + dim('…');        // there is more than fits
+    out += s[i]; n++; i++;
+  }
+  return out;                                  // it ended within the width
+}
+
+// Give every block the rows it asks for while there are enough, and split what
+// is left evenly when there are not. Modest blocks are satisfied first, so two
+// images never cost a long file list a quarter of the pane.
+function share(wants, total) {
+  const room = wants.map(() => 0);
+  let left = total;
+  let open = wants.map((_, i) => i).filter((i) => wants[i] > 0);
+  while (left > 0 && open.length) {
+    const each = Math.max(1, Math.floor(left / open.length));
+    let spent = 0;
+    for (const i of open) {
+      const give = Math.min(each, wants[i] - room[i], left - spent);
+      if (give > 0) { room[i] += give; spent += give; }
+    }
+    if (!spent) break;
+    left -= spent;
+    open = open.filter((i) => room[i] < wants[i]);
+  }
+  return room;
+}
+
+function ago(ms) {
+  const m = Math.floor(ms / 60000);
+  if (m < 1) return 'зараз';
+  if (m < 60) return m + ' хв';
+  const h = Math.floor(m / 60);
+  return h < 24 ? h + ' год' : Math.floor(h / 24) + ' дн';
+}
 
 function rule(title, count) {
   const w = W();
@@ -335,87 +454,165 @@ function when(ms) {
   return d.toISOString().slice(5, 10).replace('-', '.') + '    ' + d.toTimeString().slice(0, 5);
 }
 
-// What a click on a row should open, keyed by that row's index in the output
-// array. Screen rows are 1-based, so a click at row y looks up rowHits[y - 1].
+// What a click on a row should open, and which block each row belongs to, both
+// keyed by that row's index in the output array. Screen rows are 1-based, so a
+// click at row y looks up index y - 1 in either.
 let rowHits = {};
+let blockAt = {};
 
-// Media, files and links for one state object. It pushes into the caller's array
-// rather than returning its own, so the indices it records are the final ones.
-function bodyOf(out, st, base, limits) {
-  const w = W();
-  const media = st.media || [];
-  if (media.length) {
-    out.push(rule('MEDIA', media.length));
-    for (const m of media.slice(0, limits.media)) {
-      rowHits[out.length] = { open: m.full };
-      out.push('  ' + sgr('36', m.name) + dim('  ' + kb(m.size)) + dim('  ' + shorten(m.full, w - 20, base)));
-    }
+// Each block keeps its own scroll offset across redraws. That is what lets the
+// wheel move the block under the pointer while the rest of the pane stays put.
+const scroll = {};
+const LIST = 'SESSIONS';
+
+// One block: its rule, then as many item rows as `room` allows, starting at this
+// block's own offset. Items are { text, open?, session? }. `focus`, when given,
+// drags the offset until that item is on screen — the picker's cursor.
+function panel(out, key, label, items, room, count, focus, empty) {
+  const max = Math.max(0, items.length - room);
+  let off = Math.min(Math.max(0, scroll[key] || 0), max);
+  if (focus != null) {
+    if (focus < off) off = focus;
+    if (focus >= off + room) off = focus - room + 1;
+    off = Math.min(Math.max(0, off), max);
   }
-  const fl = [...st.files.entries()].sort((a, b) => (b[1].t > a[1].t ? 1 : -1));
-  out.push(rule('FILES', fl.length + (st.partial ? '+' : '')));
-  if (!fl.length) out.push(dim('  (порожньо)'));
-  for (const [p, meta] of fl.slice(0, limits.files)) {
-    const line = '  ' + dim(hhmm(meta.t)) + ' ' + (meta.n > 1 ? dim('×' + meta.n + ' ') : '') + shorten(p, w - 12, base);
-    out.push(TEMP.test(p) ? dim(strip(line)) : line);
-  }
-  const lk = [...st.links.entries()].sort((a, b) => (b[1] > a[1] ? 1 : -1));
-  out.push(rule('LINKS', lk.length));
-  if (!lk.length) out.push(dim('  (порожньо)'));
-  for (const [u] of lk.slice(0, limits.links)) {
-    rowHits[out.length] = { open: u };
-    out.push('  ' + sgr('4;34', u.length > w - 4 ? u.slice(0, w - 5) + '…' : u));
+  scroll[key] = off;
+  // rule() pads by the plain length of what it is given, so the tag stays free
+  // of colour codes.
+  const tag = (count != null ? count : items.length)
+    + (max > 0 ? ' ' + (off + 1) + '–' + Math.min(items.length, off + room) : '');
+  blockAt[out.length] = key;
+  out.push(clip(rule(label, tag), W()));
+  if (!items.length) { blockAt[out.length] = key; out.push(clip(dim('  ' + (empty || '(порожньо)')), W())); return; }
+  for (const it of items.slice(off, off + room)) {
+    if (it.open) rowHits[out.length] = { open: it.open };
+    if (it.session != null) rowHits[out.length] = { session: it.session };
+    blockAt[out.length] = key;
+    out.push(clip(it.text, W()));
   }
 }
 
-function renderWatch() {
+// Lay the blocks out so the whole pane fits: one row per rule, the rest shared
+// by appetite. What does not fit scrolls inside its own block rather than
+// pushing the footer off the bottom of the screen.
+function layout(out, blocks, avail) {
+  const wants = blocks.map((b) => (b.want != null ? b.want : Math.max(1, b.items.length)));
+  const room = share(wants, Math.max(0, avail - blocks.length));
+  blocks.forEach((b, i) => panel(out, b.key, b.label, b.items, room[i], b.count, b.focus, b.empty));
+}
+
+// Reading a transcript's tail to see what it is doing is only worth it for a
+// session that moved recently. Older ones are cold by definition.
+function stateFor(s) {
+  return Date.now() - s.mtime > RECENT ? { waiting: false, tool: null } : stateOf(s);
+}
+
+function iconFor(s, st) {
+  const age = Date.now() - s.mtime;
+  if (age > RECENT) return dim('○');
+  if (st.waiting) return sgr('1;33', '◐');
+  return age < 90000 ? sgr('1;32', '●') : sgr('33', '◑');
+}
+
+// One row of the live-sessions block: what the session is, how long since it
+// moved, and either the tool it is running or the fact that it stopped and is
+// waiting for you.
+function activeRow(s, self) {
+  const st = s.state || stateFor(s);
+  const stamp = ago(Date.now() - s.mtime).padStart(5);
+  const room = Math.max(10, Math.floor((W() - 12) * 0.5));
+  const name = (s.title || projOf(s) || s.id.slice(0, 8)).slice(0, room).padEnd(room);
+  const note = st.waiting ? sgr('33', 'чекає на тебе') : dim(st.tool || 'працює');
+  return ' ' + iconFor(s, st) + ' ' + dim(stamp) + '  ' + (self ? sgr('1;36', name) : name) + '  ' + note;
+}
+
+function pickRow(s, on) {
+  const st = stateFor(s);
+  const line = ' ' + iconFor(s, st) + ' ' + dim(when(s.mtime)) + '  ' + (s.title || '(без назви) ' + s.id.slice(0, 8));
+  return on ? sgr('7', strip(line)) : line;
+}
+
+// The three blocks a session's body is made of, as items rather than lines, so
+// the layout can decide how many of each actually fit. Long values are left
+// whole here — clip() cuts them to the pane's width as they are printed.
+function bodyItems(st, base) {
   const w = W();
+  return {
+    media: (st.media || []).map((m) => ({
+      open: m.full,
+      text: '  ' + sgr('36', m.name) + dim('  ' + kb(m.size)) + dim('  ' + shorten(m.full, w - 20, base)),
+    })),
+    files: [...st.files.entries()]
+      .sort((a, b) => (b[1].t > a[1].t ? 1 : -1))
+      .map(([p, meta]) => {
+        const line = '  ' + dim(hhmm(meta.t)) + ' ' + (meta.n > 1 ? dim('×' + meta.n + ' ') : '') + shorten(p, w - 12, base);
+        return { text: TEMP.test(p) ? dim(strip(line)) : line };
+      }),
+    links: [...st.links.entries()]
+      .sort((a, b) => (b[1] > a[1] ? 1 : -1))
+      .map(([u]) => ({ open: u, text: '  ' + sgr('4;34', u) })),
+  };
+}
+
+// The blocks below the head of a view, shared by both of them.
+function bodyBlocks(st, base) {
+  const b = bodyItems(st, base);
   const out = [];
-  rowHits = {};
-  out.push(rule('PLAN'));
-  if (!live.todos.length) out.push(dim('  (немає активного плану)'));
-  for (const td of live.todos.slice(0, 12)) {
+  if (b.media.length) out.push({ key: 'МЕДІА', label: 'МЕДІА', items: b.media });
+  out.push({ key: 'ФАЙЛИ', label: 'ФАЙЛИ', items: b.files, count: b.files.length + (st.partial ? '+' : '') });
+  out.push({ key: 'ЛІНКИ', label: 'ЛІНКИ', items: b.links });
+  return out;
+}
+
+// Paint exactly H() - 1 rows: the blocks, blank filler, then the footer on the
+// last one. Writing a full screen and then a newline would scroll the terminal
+// by a row, which on a block terminal is a frame that never comes back.
+function paint(out, footer) {
+  const rows = H() - 1;
+  while (out.length < rows - 1) out.push('');
+  out.length = rows - 1;
+  out.push(clip(footer, W()));
+  if (process.env.SIDEBAR_HITS) process.stderr.write(JSON.stringify({ hits: rowHits, blocks: blockAt }));
+  process.stdout.write('\x1b[H\x1b[2J' + out.join('\n') + '\n');
+}
+
+function renderWatch() {
+  const out = [];
+  rowHits = {}; blockAt = {};
+  live.media = mediaOf(path.basename(file, '.jsonl'));
+
+  const todos = live.todos.map((td) => {
     const mark = td.status === 'completed' ? sgr('32', '✓') : td.status === 'in_progress' ? sgr('1;33', '▸') : dim('·');
     const txt = (td.status === 'in_progress' && td.activeForm) || td.content || '';
-    const body = txt.length > w - 4 ? txt.slice(0, w - 5) + '…' : txt;
-    out.push('  ' + mark + ' ' + (td.status === 'completed' ? dim(body) : body));
-  }
-  out.push('');
-  live.media = mediaOf(path.basename(file, '.jsonl'));
-  bodyOf(out, live, live.cwd, { media: 6, files: 14, links: 12 });
-  out.push('');
-  out.push(dim(' Tab — сесії · клік по лінку чи медіа відкриє його · q — вихід'));
-  if (process.env.SIDEBAR_HITS) process.stderr.write(JSON.stringify(rowHits));
-  process.stdout.write('\x1b[H\x1b[2J' + out.join('\n') + '\n');
+    return { text: '  ' + mark + ' ' + (td.status === 'completed' ? dim(txt) : txt) };
+  });
+  const live_ = activeSessions().map((s) => ({ text: activeRow(s, s.path === file) }));
+
+  layout(out, [
+    { key: 'ЖИВІ', label: 'СЕСІЇ', items: live_, empty: 'нічого не рухалось останні 3 год' },
+    { key: 'ПЛАН', label: 'ПЛАН', items: todos, empty: 'немає активного плану' },
+    ...bodyBlocks(live, live.cwd),
+  ], H() - 2);
+
+  paint(out, dim(' Tab — список · клік відкриває · колесо гортає блок · q — вихід'));
 }
 
 function renderPick() {
   const out = [];
-  rowHits = {};
-  const rows = H();
-  const listRoom = Math.max(3, Math.min(sessions.length, Math.floor((rows - 6) / 2)));
-  out.push(rule('SESSIONS', sessions.length));
-  const from = Math.min(Math.max(0, cursor - Math.floor(listRoom / 2)), Math.max(0, sessions.length - listRoom));
-  for (let i = from; i < Math.min(sessions.length, from + listRoom); i++) {
-    const s = sessions[i];
-    const on = i === cursor;
-    const stamp = when(s.mtime);
-    const room = W() - stamp.length - 5;
-    const t = s.title || '(без назви) ' + s.id.slice(0, 8);
-    const body = t.length > room ? t.slice(0, room - 1) + '…' : t;
-    rowHits[out.length] = { session: i };
-    out.push(on ? sgr('7', ' ▸ ' + stamp + '  ' + body) : '   ' + dim(stamp) + '  ' + body);
-  }
-  out.push('');
+  rowHits = {}; blockAt = {};
+  const items = sessions.map((s, i) => ({ session: i, text: pickRow(s, i === cursor) }));
   const sel = sessions[cursor];
-  if (sel) {
-    const st = scanSession(sel);
-    const left = rows - out.length - 3;
-    bodyOf(out, st, st.cwd, { media: 3, files: Math.max(2, Math.floor(left * 0.45)), links: Math.max(2, Math.floor(left * 0.3)) });
-  }
-  out.push('');
-  out.push(dim(' ↑↓ вибір · Enter новий таб · клік по лінку відкриє · Esc назад'));
-  if (process.env.SIDEBAR_HITS) process.stderr.write(JSON.stringify(rowHits));
-  process.stdout.write('\x1b[H\x1b[2J' + out.join('\n') + '\n');
+  const st = sel ? scanSession(sel) : null;
+  const avail = H() - 2;
+
+  // The list takes about half the pane and the selected session's body the rest,
+  // so moving the cursor always shows something about what you are pointing at.
+  layout(out, [
+    { key: LIST, label: 'СЕСІЇ', items, want: Math.max(4, Math.floor(avail / 2)), count: sessions.length, focus: cursor },
+    ...(st ? bodyBlocks(st, st.cwd) : []),
+  ], avail);
+
+  paint(out, dim(' ↑↓ вибір · Enter новий таб · колесо гортає блок · Esc назад'));
 }
 
 let mode = 'watch';
@@ -430,14 +627,23 @@ const draw = () => (mode === 'pick' ? renderPick() : renderWatch());
 function onMouse(btn, y, press) {
   if (!press) return;
   const b = btn & ~28;                       // strip shift/alt/ctrl
-  if (b === 64) { if (mode === 'pick') cursor = Math.max(0, cursor - 3); return; }
-  if (b === 65) { if (mode === 'pick') cursor = Math.min(sessions.length - 1, cursor + 3); return; }
+  if (b === 64 || b === 65) return onWheel(y, b === 64 ? -3 : 3);
   if (b !== 0) return;
   const hit = rowHits[y - 1];
   if (!hit) return;
   if (hit.open) return openExternal(hit.open);
   if (hit.session === cursor) openInTab(sessions[cursor]);
   else cursor = hit.session;
+}
+
+// The wheel moves whatever the pointer is over, and only that. Over the picker's
+// session list it moves the cursor rather than the offset: the cursor drags the
+// offset along already, and moving both would have them fight.
+function onWheel(y, step) {
+  const key = blockAt[y - 1];
+  if (!key) return;
+  if (key === LIST) { cursor = Math.min(Math.max(0, cursor + step), Math.max(0, sessions.length - 1)); return; }
+  scroll[key] = Math.max(0, (scroll[key] || 0) + step);
 }
 
 // ---- run ----

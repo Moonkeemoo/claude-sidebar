@@ -1,9 +1,10 @@
-// Everything a click depends on, checked against a real render.
+// Everything the layout and the mouse depend on, checked against real renders.
 //
-// The pane builds two things at once: the lines it prints, and rowHits — a map
-// from a row's index to what clicking that row does. If those two drift apart by
-// even one line, every click lands on the wrong thing and nothing looks broken.
-// SIDEBAR_HITS makes the map observable so the drift can be caught here.
+// The pane builds three things at once: the lines it prints, a map from each row
+// to what clicking it does, and a map from each row to the block it belongs to.
+// Let any of those drift by a line and clicks land on the wrong thing, the wheel
+// scrolls the wrong block, or a row wraps and shifts everything below it — none
+// of which looks broken on screen. SIDEBAR_HITS makes both maps observable.
 //
 //   node sidebar.test.js
 const { spawnSync } = require('child_process');
@@ -13,44 +14,69 @@ const assert = require('assert');
 
 const SIDEBAR = path.join(__dirname, 'sidebar.js');
 const strip = (s) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+const width = (s) => [...strip(s)].length;          // columns, not bytes
 
-function render(mode) {
+function render(mode, cols = 76, rows = 30) {
   const r = spawnSync(process.execPath, [SIDEBAR], {
-    env: { ...process.env, SIDEBAR_ONCE: mode, SIDEBAR_HITS: '1', COLUMNS: '76', LINES: '30' },
+    env: { ...process.env, SIDEBAR_ONCE: mode, SIDEBAR_HITS: '1', COLUMNS: String(cols), LINES: String(rows) },
     encoding: 'utf8',
   });
   assert.strictEqual(r.status, 0, 'sidebar.js exited ' + r.status + ': ' + r.stderr.slice(0, 300));
-  return { lines: strip(r.stdout).split('\n'), hits: JSON.parse(r.stderr) };
+  const map = JSON.parse(r.stderr);
+  // The exit handler adds a newline of its own in one-shot mode, so trailing
+  // blanks are not part of the frame. Row indices below it are untouched.
+  const lines = r.stdout.replace(/\n+$/, '').split('\n');
+  return { lines, hits: map.hits, blocks: map.blocks, cols, rows, mode };
 }
 
-// ---- the picker: the top row is highlighted, and it is session 0 ----
+// ---- the pane fits its window, whatever the window ----
+// Too tall and the top scrolls away; one row too wide and it wraps, which costs
+// two screen lines and puts every click below it one row out.
+for (const [cols, rows] of [[40, 12], [50, 20], [60, 22], [76, 30], [120, 50]]) {
+  for (const mode of ['1', 'pick']) {
+    const v = render(mode, cols, rows);
+    const at = mode + ' ' + cols + 'x' + rows;
+    assert.ok(v.lines.length <= rows, at + ': painted ' + v.lines.length + ' rows into ' + rows);
+    for (const [i, line] of v.lines.entries()) {
+      assert.ok(width(line) <= cols - 1, at + ': row ' + (i + 1) + ' is ' + width(line) + ' wide, pane is ' + (cols - 1));
+    }
+  }
+}
+
+// ---- the picker highlights the first session, on the row below the header ----
 const pick = render('pick');
-assert.ok(/SESSIONS/.test(pick.lines[0]), 'row 1 is not the SESSIONS header: ' + pick.lines[0]);
+assert.ok(/СЕСІЇ/.test(pick.lines[0]), 'row 1 is not the session header: ' + strip(pick.lines[0]));
 assert.deepStrictEqual(
   pick.hits['1'], { session: 0 },
   'the row below the header must be session 0, not ' + JSON.stringify(pick.hits['1'])
 );
 
-// ---- every clickable row shows the thing it opens ----
-// A link row prints the URL, a media row prints the file name. If a hit points at
-// a row that does not show it, the map has slipped against the render.
+// ---- every clickable row shows the thing it opens, and sits inside a block ----
+// The second half matters for the wheel: a row with no block behind it is a row
+// the pointer can sit on while scrolling does nothing.
 let checked = 0;
 for (const view of [pick, render('1')]) {
   for (const [i, hit] of Object.entries(view.hits)) {
+    assert.ok(view.blocks[i], 'row ' + (+i + 1) + ' is clickable but belongs to no block');
     if (!hit.open) continue;
-    const line = view.lines[+i];
-    assert.ok(line !== undefined, 'hit at row ' + (+i + 1) + ' points past the end of the render');
+    const line = strip(view.lines[+i] || '');
     const needle = hit.open.startsWith('http')
       ? hit.open.replace(/^https?:\/\//, '').slice(0, 15)
       : path.basename(hit.open);
-    assert.ok(
-      line.includes(needle),
-      'row ' + (+i + 1) + ' opens "' + hit.open + '" but shows "' + line.trim() + '"'
-    );
+    assert.ok(line.includes(needle), 'row ' + (+i + 1) + ' opens "' + hit.open + '" but shows "' + line.trim() + '"');
     checked++;
   }
 }
 assert.ok(checked > 0, 'no clickable rows in either view — the map is not being built');
+
+// ---- a long block scrolls inside itself rather than pushing the pane over ----
+// Squeeze the window until something has to be cut, and the block that got cut
+// must say so in its rule.
+const tight = render('pick', 60, 14);
+assert.ok(
+  tight.lines.some((l) => /\d+–\d+/.test(strip(l))),
+  'nothing reported a scroll window at 60x14, so nothing was actually clipped'
+);
 
 // ---- and a click parses to the right button ----
 // MOUSE_RE and the modifier mask are read out of sidebar.js itself, so this
@@ -76,4 +102,4 @@ assert.strictEqual(parse('hello'), null, 'plain text is not a mouse event');
 assert.ok(/target\.startsWith\('http:\/\/'\)/.test(src), 'openExternal lost its http guard');
 assert.ok(/fs\.existsSync\(target\)/.test(src), 'openExternal lost its existence guard');
 
-console.log('sidebar OK — ' + checked + ' клікабельних рядків збігаються з рендером, миша розбирається, відкриття під охороною');
+console.log('sidebar OK — вписується у 5 розмірів вікна, ' + checked + ' клікабельних рядків збігаються з рендером, блоки гортаються, миша під охороною');

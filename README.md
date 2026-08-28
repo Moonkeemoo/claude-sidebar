@@ -11,44 +11,74 @@ Node only, no dependencies, one file. It reads transcripts and never writes to t
 
 ## The two screens
 
-**The live view** is what you get on start. Four blocks, all following the session that is currently
-moving:
+**The live view** is what you get on start. It opens with every session that has moved in the last
+three hours, then the plan, media, files and links of the one it is following:
 
 ```
-── PLAN ─────────────────────────────────────────────
-  ✓ Diagnose why Warp closed          done
-  ▸ Make the session rows clickable   in progress
-  · Write the README                  pending
-── MEDIA 1 ──────────────────────────────────────────
+── СЕСІЇ 5 1–3 ──────────────────────────────────────
+ ● зараз  Status line modific  Bash git push
+ ◐  2 хв  Reef сессія - варп   чекає на тебе
+ ◑ 1 год  Пошук інструменту    Edit sidebar.js
+── ПЛАН 3 ───────────────────────────────────────────
+  ✓ Diagnose why Warp closed
+  ▸ Make the session rows clickable
+  · Write the README
+── МЕДІА 1 ──────────────────────────────────────────
   1.png  121K  image-cache/9de93e09…/1.png
-── FILES 16 ─────────────────────────────────────────
-  20:27 ×11 ~/.claude/sidebar.js      ×11 = touched 11 times
+── ФАЙЛИ 25 1–4 ─────────────────────────────────────
+  20:27 ×11 ~/.claude/sidebar.js
   20:17 statusline.js
-── LINKS 17 ─────────────────────────────────────────
+── ЛІНКИ 17 ─────────────────────────────────────────
   https://docs.warp.dev/terminal/windows/tab-configs/
 
- Tab — сесії · q — вихід
+ Tab — список · клік відкриває · колесо гортає блок
 ```
 
-`FILES 16+` with a plus means the count comes from the newest slice of a long transcript, not the
-whole of it. Greyed-out file rows are temp paths. The MEDIA and LINKS rows are clickable — see
-[Mouse](#mouse).
+The mark in front of a session is the useful part of that first block:
+
+| Mark | Means |
+|---|---|
+| `●` green | moving right now, with the tool it is running beside it |
+| `◐` yellow | the turn ended and nothing will happen until you say something |
+| `◑` | it has a tool call open but has not written for a while |
+| `○` | cold, nothing in the last three hours |
+
+`◐` is the one to look for. A session that reported and stopped will not restart on its own, and with
+several running in parallel that is the state easiest to lose track of. The session the pane is
+following is the one shown in cyan.
+
+`── ФАЙЛИ 25 1–4 ──` means the block holds 25 rows and is showing the first four of them — scroll it
+to see the rest. `FILES 16+` with a plus is a different thing: the count comes from the newest slice
+of a long transcript rather than the whole of it. Greyed-out file rows are temp paths. The МЕДІА and
+ЛІНКИ rows are clickable — see [Mouse](#mouse).
 
 **The session list** opens on `Tab`. Every Claude session on the machine, newest first, titled by what
 the session was actually about. Move the highlight and the blocks below it switch to that session's
 media, files and links, so you can find a conversation by what it touched rather than by its id.
 
 ```
-── SESSIONS 88 ──────────────────────────────────────
- ▸ сьогодні 20:43  Reef сессія - варп закрився
-   сьогодні 20:27  Пошук інструменту для гуманізації
-   вчора    18:02  Mono card API balance tracking
-   08.27    11:40  Renovation proto
-   …
- ↑↓ вибір · Enter новий таб · Esc назад
+── СЕСІЇ 88 1–4 ─────────────────────────────────────
+ ● сьогодні 21:45  Status line modification and warp
+ ◐ сьогодні 21:44  Reef сессія - варп закрився
+ ◑ сьогодні 20:27  Пошук інструменту для гуманізації
+ ○ вчора    18:02  Mono card API balance tracking
+── ФАЙЛИ 25 1–4 ─────────────────────────────────────
+  21:45 ×20 claude-sidebar/sidebar.js
+  …
+ ↑↓ вибір · Enter новий таб · колесо гортає блок · Esc назад
 ```
 
 The pane's own labels are Ukrainian.
+
+## Fitting the window
+
+The whole pane always fits: it paints exactly as many rows as the window has and never wraps a line.
+Blocks are handed the room they ask for while there is enough, and share what is left evenly when
+there is not — so two images never cost a long file list a quarter of the pane. Anything that does
+not fit scrolls inside its own block instead of pushing the footer off the bottom.
+
+That is why nothing here reflows when you drag the divider. Make the pane narrower and rows get
+clipped with an `…`; make it shorter and blocks give up rows to each other and start scrolling.
 
 ## Install
 
@@ -105,8 +135,12 @@ so you can find an old conversation, see the screenshot you pasted into it, and 
 leaving the pane.
 
 In the session list, **click a session row to highlight it, click the highlighted row again to open
-it.** The second click does what `Enter` would have done. Scroll the wheel to move through the list
-three rows at a time.
+it.** The second click does what `Enter` would have done.
+
+**The wheel scrolls whatever the pointer is over, and only that.** Put it on ФАЙЛИ and the file list
+moves while the session list above stays where it was; move to ЛІНКИ and that one moves instead. Each
+block keeps its own position, so a block you scrolled stays scrolled while the pane keeps updating
+around it.
 
 A click can never run a command. A row opens only an `http`/`https` link or a file that exists on
 disk, and the target is handed to the operating system as one argument rather than through a shell —
@@ -193,13 +227,17 @@ when you pinned a session with an argument. Nothing breaks if you skip this.
 node sidebar.test.js
 ```
 
-The pane builds two things on every frame: the lines it prints, and a map from each row to what
-clicking it does. Drift between those by a single line and every click lands on the wrong thing while
-the screen still looks right. The test renders both views for real and checks that each clickable row
-actually shows the link or file it claims to open, that the row under the header is the first session,
-that a mouse report resolves to the right button with `Shift` or `Ctrl` held, and that the opener
-still refuses anything but a link or an existing file. Insert one stray line into a renderer and it
-goes red.
+The pane builds three things on every frame: the lines it prints, a map from each row to what clicking
+it does, and a map from each row to the block it belongs to. Let any of them drift by a single line
+and clicks land on the wrong thing, or the wheel scrolls the wrong block, while the screen still looks
+right.
+
+So the test renders both views for real, at five window sizes, and checks that the frame never
+overflows the window or wraps a line, that every clickable row actually shows the link or file it
+claims to open and sits inside a block, that the row under the header is the first session, that a
+squeezed window makes something report a scroll window, that a mouse report resolves to the right
+button with `Shift` or `Ctrl` held, and that the opener still refuses anything but a link or an
+existing file. Insert one stray line into a renderer and it goes red.
 
 ## What it deliberately does not do
 
@@ -219,7 +257,8 @@ and Warp on Windows does not support them anyway.
 | `SIDEBAR_ONCE=1` | render the live view once and exit |
 | `SIDEBAR_ONCE=pick` | render the session list once and exit |
 | `SIDEBAR_NO_LAUNCH=1` | write the tab config, do not fire the URI |
-| `SIDEBAR_HITS=1` | dump the row-to-click map to stderr on every frame |
+| `SIDEBAR_HITS=1` | dump the row-to-click and row-to-block maps to stderr on every frame |
+| `COLUMNS`, `LINES` | the pane size to lay out for when stdout is not a terminal |
 
 The `SIDEBAR_ONCE` modes skip the alternate screen and the mouse, so their output pipes cleanly into
 `grep` and friends.

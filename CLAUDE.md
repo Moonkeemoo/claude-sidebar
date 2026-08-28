@@ -1,13 +1,13 @@
 # Working on this repo
 
-`sidebar.js` is one file, ~420 lines, no dependencies, and it should stay that way. It is a viewer:
+`sidebar.js` is one file, ~520 lines, no dependencies, and it should stay that way. It is a viewer:
 it reads `~/.claude/projects/*/*.jsonl` and writes nothing except a Warp tab config. Any change that
 makes it write to a transcript is wrong.
 
 Commits, comments and docs in English. The strings the pane prints are Ukrainian, because that is
 the language its user reads — keep them Ukrainian.
 
-## Four invariants, and what breaks if you drop them
+## Five invariants, and what breaks if you drop them
 
 **The alternate screen is not optional.** `renderWatch` and `renderPick` repaint the whole pane with
 `\x1b[H\x1b[2J`, up to once a second while a session is active. In a block terminal — Warp — that
@@ -17,12 +17,24 @@ and the terminal went down. `ALT_ON` / `ALT_OFF` fix it by giving the pane its o
 remove them, and keep the `process.on('exit')` restore so a crash does not strand the user on a blank
 screen.
 
-**A renderer that pushes a row must record what clicking it does, in the same breath.** `rowHits` maps
-a row's index in the output array to `{ session }` or `{ open }`, and `onMouse` resolves a click at
-screen row `y` as `rowHits[y - 1]`. Push a line without recording it and the map slips against the
-render: every click below that point lands on the wrong thing, and the screen still looks correct.
-Both renderers reset `rowHits` on entry — keep that. `sidebar.test.js` guards exactly this and goes
-red on a single stray `out.push`; run it after touching either renderer or `bodyOf`.
+**Rows reach the screen through `panel()`, and nothing else may push one.** It is what records
+`rowHits[i]` (what a click there opens) and `blockAt[i]` (which block the wheel should move), and what
+runs every row through `clip()`. Push a line straight into `out` and both maps slip against the
+render from that point down: clicks land on the wrong thing, the wheel scrolls the wrong block, and
+the screen still looks perfectly correct. Both renderers reset the maps on entry — keep that.
+
+**`clip()` is the only thing standing between a long or dirty value and a broken frame.** A row wider
+than the pane wraps and costs two screen lines; a row containing a newline — an `ai-title` can — does
+the same. Either shifts every row below it. `clip` truncates to the width and drops control
+characters, so every row goes through it, including rules, empty-block text and the footer.
+
+**`paint()` owns the height.** It pads and truncates to exactly `H() - 1` rows and puts the footer on
+the last of them. Writing a full screen plus a newline scrolls the terminal by a row, and on a block
+terminal that row never comes back. `layout()` keeps blocks inside that budget by sharing rows out
+with `share()`; anything that does not fit scrolls inside its block.
+
+`sidebar.test.js` guards all three, at five window sizes, and goes red on a single stray `out.push`.
+Run it after touching a renderer, `panel`, `layout` or `bodyItems`.
 
 **`openExternal` is the only path from a transcript to the operating system.** It opens an `http`/
 `https` link or a file that exists, nothing else, and on Windows it goes through `rundll32` rather
