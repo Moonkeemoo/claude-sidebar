@@ -1,0 +1,23 @@
+# A tab that opens Claude Code with the sidebar already running beside it.
+# Copy into %APPDATA%\warp\Warp\data\tab_configs\ and edit the two directories.
+# Panes in a split are always equally sized; drag the divider to narrow the pane.
+
+name = 'Claude + sidebar'
+
+[[panes]]
+id = 'root'
+split = 'horizontal'
+children = ['claude', 'sidebar']
+
+[[panes]]
+id = 'claude'
+type = 'terminal'
+directory = 'C:\Users\tomoo\Documents\GitHub'
+commands = ['claude']
+is_focused = true
+
+[[panes]]
+id = 'sidebar'
+type = 'terminal'
+directory = 'C:\Users\tomoo\Documents\GitHub\claude-sidebar'
+commands = ['node sidebar.js']

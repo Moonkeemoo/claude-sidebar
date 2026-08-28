@@ -97,6 +97,27 @@ Only Warp is wired up. On a different terminal the keypress writes the config an
 Set `SIDEBAR_NO_LAUNCH=1` to write the tab config without firing the URI, which is how you inspect
 what it would have opened.
 
+## Starting Claude with the pane already open
+
+Warp can open a tab already split, each half running its own command, which is the whole setup in
+one click. `warp/claude.toml` is that config — Claude Code on the left, this pane on the right.
+
+Copy it into your tab config directory and edit the two `directory` lines:
+
+```powershell
+copy warp\claude.toml "$env:APPDATA\warp\Warp\data	ab_configs\"
+```
+
+It then appears in the `+` menu in the tab bar. To make it what every new tab does, mark it as the
+default tab in Warp's sidecar panel; after that `Ctrl+T` opens Claude and the pane together.
+
+There is no way to trigger this by typing `claude` in an already-open pane. A shell running inside a
+pane cannot split the pane it lives in, and a Claude Code `SessionStart` hook cannot either — a hook
+runs as a child process with no say over the terminal's layout. The tab has to be opened as a tab.
+
+Panes in a Warp split are always equally sized, so the config gives you a half-and-half tab. Drag the
+divider once and Warp remembers it for that config.
+
 ## Following the live session
 
 By default the pane picks the transcript with the newest modification time and re-checks once a
