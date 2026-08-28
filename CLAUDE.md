@@ -1,6 +1,6 @@
 # Working on this repo
 
-`sidebar.js` is one file, ~520 lines, no dependencies, and it should stay that way. It is a viewer:
+`sidebar.js` is one file, ~730 lines, no dependencies, and it should stay that way. It is a viewer:
 it reads `~/.claude/projects/*/*.jsonl` and writes nothing except a Warp tab config. Any change that
 makes it write to a transcript is wrong.
 
@@ -67,8 +67,8 @@ SIDEBAR_ONCE=1    COLUMNS=76 LINES=24 node sidebar.js | sed 's/\x1b\[[0-9;?]*[A-
 SIDEBAR_ONCE=pick COLUMNS=76 LINES=24 node sidebar.js | sed 's/\x1b\[[0-9;?]*[A-Za-z]//g'
 ```
 
-The two `SIDEBAR_ONCE` renders must not emit `1049`, `1000h` or `1006h` — those modes pipe their
-output, and a stray mode-switch corrupts whatever reads it.
+The two `SIDEBAR_ONCE` renders must not emit `1049`, `1000h`, `1003h` or `1006h` — those modes
+pipe their output, and a stray mode-switch corrupts whatever reads it.
 
 Interactive behaviour — mouse, keys, the Warp tab — cannot be verified from a tool call. Ask the user
 to press the key and report what happened rather than asserting it works.

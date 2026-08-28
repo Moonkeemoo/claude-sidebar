@@ -31,7 +31,7 @@ three hours, then the plan, media, files and links of the one it is following:
 ── ЛІНКИ 17 ─────────────────────────────────────────
   https://docs.warp.dev/terminal/windows/tab-configs/
 
- Tab — список · клік відкриває · колесо гортає блок
+ Tab — список · клік відкриває · колесо гортає блок · q — вихід
 ```
 
 The mark in front of a session is the useful part of that first block:
@@ -115,7 +115,7 @@ node sidebar.js 9de93e09
 
 | Press | What happens |
 |---|---|
-| `Tab` or `S` | open the session list |
+| `Tab` or `S` | open the session list, and press it again to close it |
 | `↑` `↓`, or `k` `j` | move the highlight; the blocks below follow it |
 | `g` / `G` | jump to the newest / oldest session |
 | `Enter` | open the highlighted session in a new terminal tab, resumed |
@@ -129,13 +129,16 @@ You never have to switch layouts to drive it. `g` and `G` are the exception, Lat
 
 ### Mouse
 
-Links and media are clickable on both screens. **Click a link and it opens in your browser; click an
-image and it opens in your image viewer.** That works in the live view and in the session list alike,
-so you can find an old conversation, see the screenshot you pasted into it, and open it without
-leaving the pane.
+**The row under the pointer lights up when clicking it would do something**, so you can tell a live
+row from an inert one without trying it. Rules, plan lines and empty blocks stay dark.
 
-In the session list, **click a session row to highlight it, click the highlighted row again to open
-it.** The second click does what `Enter` would have done.
+Files, links and media are clickable on both screens. **Click a link and it opens in your browser,
+click a file or a pasted image and it opens in whatever your system opens that with.** That works in
+the live view and in the session list alike, so you can find an old conversation, see the screenshot
+you pasted into it, and open it without leaving the pane.
+
+In the session list, **a click on a session row opens it** — the same thing `Enter` does, without
+moving the highlight there first.
 
 **The wheel scrolls whatever the pointer is over, and only that.** Put it on ФАЙЛИ and the file list
 moves while the session list above stays where it was; move to ЛІНКИ and that one moves instead. Each
@@ -151,7 +154,7 @@ how every mouse-aware terminal program behaves, not a quirk of this one.
 
 ## Opening a session in its own tab
 
-`Enter`, or that second click, opens a new Warp tab in the session's own working directory running
+`Enter`, or a click on the row, opens a new Warp tab in the session's own working directory running
 `claude --resume <id>`. You are back in that conversation with its history intact.
 
 It works by writing a Warp tab config and then firing `warp://tab_config/claude-resume`. The config is

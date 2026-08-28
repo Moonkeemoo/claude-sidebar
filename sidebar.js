@@ -4,11 +4,11 @@
 //   node sidebar.js                  follow the session that is live right now
 //   node sidebar.js <session-id>     pin one session
 //
-// Keys:  Tab or S  session list · ↑↓ move · Enter open in a new Warp tab
-//        Esc back · Q quit
-// Mouse: click a session row to select it, click it again to open it; click a
-//        link or a media file to open that. Wheel scrolls. Selecting text then
-//        needs Shift, as in any mouse-aware TUI.
+// Keys:  Tab or S  session list, Tab again closes it · ↑↓ move · Enter open in
+//        a new Warp tab · Esc back · Q quit
+// Mouse: the row under the pointer lights up when it opens something — click a
+//        session row to open that session, a link or a media row to open that.
+//        Wheel scrolls. Selecting text needs Shift, as in any mouse-aware TUI.
 // The letter keys accept Latin, Ukrainian and Russian layouts.
 //
 // No dependencies.
@@ -40,11 +40,13 @@ const K_UP = new Set(['\u001b[A', 'k', 'л', 'Л']);
 const K_DOWN = new Set(['\u001b[B', 'j', 'о', 'О']);
 
 // ---- mouse, SGR 1006 ----
-// 1000 reports press/release; 1006 encodes them as \x1b[<btn;col;rowM|m, so the
+// 1000 reports press/release, 1003 adds bare motion — that is what lets a row
+// light up under the pointer; 1006 encodes both as \x1b[<btn;col;rowM|m, so the
 // coordinates survive past column 95. Modifier bits (shift/alt/ctrl = 4|8|16)
-// ride in the button field and are masked off. 64/65 are the wheel.
-const MOUSE_ON = '\x1b[?1000h\x1b[?1006h';
-const MOUSE_OFF = '\x1b[?1000l\x1b[?1006l';
+// ride in the button field and are masked off. Bit 32 marks motion, 64/65 are
+// the wheel.
+const MOUSE_ON = '\x1b[?1000h\x1b[?1003h\x1b[?1006h';
+const MOUSE_OFF = '\x1b[?1003l\x1b[?1000l\x1b[?1006l';
 const MOUSE_RE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
 
 // ---- locating the live transcript ----
@@ -546,7 +548,9 @@ function bodyItems(st, base) {
       .sort((a, b) => (b[1].t > a[1].t ? 1 : -1))
       .map(([p, meta]) => {
         const line = '  ' + dim(hhmm(meta.t)) + ' ' + (meta.n > 1 ? dim('×' + meta.n + ' ') : '') + shorten(p, w - 12, base);
-        return { text: TEMP.test(p) ? dim(strip(line)) : line };
+        // A file row opens the file. Paths here are partly guessed out of shell
+        // commands, so plenty of them do not exist — openExternal is what says no.
+        return { open: p, text: TEMP.test(p) ? dim(strip(line)) : line };
       }),
     links: [...st.links.entries()]
       .sort((a, b) => (b[1] > a[1] ? 1 : -1))
@@ -572,6 +576,12 @@ function paint(out, footer) {
   while (out.length < rows - 1) out.push('');
   out.length = rows - 1;
   out.push(clip(footer, W()));
+  // The row under the pointer, reversed out, so which rows do something is
+  // visible before clicking rather than after. rowHits is this frame's own map,
+  // so a row that stopped being clickable simply stops lighting up. strip()
+  // first: a reverse that runs into the row's own \x1b[0m ends there and leaves
+  // half a bar behind.
+  if (rowHits[hover - 1]) out[hover - 1] = sgr('7', strip(out[hover - 1]));
   if (process.env.SIDEBAR_HITS) process.stderr.write(JSON.stringify({ hits: rowHits, blocks: blockAt }));
   process.stdout.write('\x1b[H\x1b[2J' + out.join('\n') + '\n');
 }
@@ -612,28 +622,42 @@ function renderPick() {
     ...(st ? bodyBlocks(st, st.cwd) : []),
   ], avail);
 
-  paint(out, dim(' ↑↓ вибір · Enter новий таб · колесо гортає блок · Esc назад'));
+  paint(out, dim(' ↑↓ вибір · клік або Enter відкриває · колесо гортає · Tab назад'));
 }
 
 let mode = 'watch';
 let sessions = [];
 let cursor = 0;
+// The screen row the pointer rests on, 1-based, or -1 for nowhere. paint() draws
+// it highlighted, but only while that row is still clickable in the frame being
+// painted — so a layout that shifts under a resting pointer cannot strand a
+// highlight on a row that no longer opens anything.
+let hover = -1;
 const draw = () => (mode === 'pick' ? renderPick() : renderWatch());
 
-// Every click resolves through rowHits. A session row highlights, and a second
-// click on the row already highlighted opens it — a double-click without the
-// timing guesswork. A media or link row opens the thing itself. The rest of the
-// screen is inert.
+// Every mouse event resolves through rowHits: motion moves the highlight, a
+// click on a link or a media row opens that, a click on a session row opens the
+// session. The rest of the screen is inert. The return value says whether the
+// frame changed — motion is reported per cell of travel, and repainting the pane
+// on each of those would put a screenful a millisecond into a terminal that then
+// has to draw them all.
 function onMouse(btn, y, press) {
-  if (!press) return;
   const b = btn & ~28;                       // strip shift/alt/ctrl
-  if (b === 64 || b === 65) return onWheel(y, b === 64 ? -3 : 3);
-  if (b !== 0) return;
+  if (b === 64 || b === 65) { onWheel(y, b === 64 ? -3 : 3); return true; }
+  if (b & 32) {                              // motion, button held or not
+    const at = rowHits[y - 1] ? y : -1;
+    if (at === hover) return false;
+    hover = at;
+    return true;
+  }
+  if (!press || b !== 0) return false;
   const hit = rowHits[y - 1];
-  if (!hit) return;
-  if (hit.open) return openExternal(hit.open);
-  if (hit.session === cursor) openInTab(sessions[cursor]);
-  else cursor = hit.session;
+  if (!hit) return false;
+  if (hit.open) { openExternal(hit.open); return false; }
+  if (hit.session == null) return false;
+  cursor = hit.session;
+  openInTab(sessions[cursor]);
+  return true;
 }
 
 // The wheel moves whatever the pointer is over, and only that. Over the picker's
@@ -675,9 +699,9 @@ if (process.stdin.isTTY) {
   process.stdin.on('data', (buf) => {
     const k = buf.toString();
     if (k.indexOf('\x1b[<') >= 0) {          // one chunk can hold several events
-      let m; MOUSE_RE.lastIndex = 0;
-      while ((m = MOUSE_RE.exec(k))) onMouse(+m[1], +m[3], m[4] === 'M');
-      draw();
+      let m, changed = false; MOUSE_RE.lastIndex = 0;
+      while ((m = MOUSE_RE.exec(k))) changed = onMouse(+m[1], +m[3], m[4] === 'M') || changed;
+      if (changed) draw();
       return;
     }
     if (k === '\u0003') return bye();
@@ -689,6 +713,7 @@ if (process.stdin.isTTY) {
     if (K_UP.has(k)) cursor = Math.max(0, cursor - 1);
     else if (K_DOWN.has(k)) cursor = Math.min(sessions.length - 1, cursor + 1);
     else if (k === '\r' || k === '\n') { const s = sessions[cursor]; if (s) openInTab(s); }
+    else if (K_LIST.has(k)) mode = 'watch';   // Tab closes what Tab opened
     else if (k === '\u001b' || K_QUIT.has(k)) mode = 'watch';
     else if (k === 'g') cursor = 0;
     else if (k === 'G') cursor = sessions.length - 1;
