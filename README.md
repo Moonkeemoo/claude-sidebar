@@ -222,6 +222,8 @@ A shell cannot split the pane it is running in, and neither can a Claude Code `S
 hook is a child process with no say over the terminal's layout. So there is no way to make typing
 `claude` grow a sidebar next to itself. What works instead is opening a tab that is already split.
 
+### Warp
+
 In Warp that tab is a tab config, and the pane writes its own:
 
 ```bash
@@ -262,28 +264,68 @@ directory = '/Users/you/Documents/GitHub/claude-sidebar'
 commands = ['node sidebar.js']
 ```
 
-### Ghostty
-
-Run the same command from inside Ghostty and it writes a launcher instead, at `~/.local/bin/claude-sidebar`
-— pass a third argument to put it somewhere else. Open a Ghostty tab, run `claude-sidebar`, and the
-window splits: Claude on the left, this pane on the right, which is the shell you ran it from.
-
-It is a script rather than a config because Ghostty has nowhere to put a layout. Its config has no
-session or workspace key; `new_split` takes a direction and nothing else; and a chained keybind cannot
-type into a split it just made — every action in a chain runs against the pane that had focus when the
-chain started. There is no `ghostty://` scheme, and the CLI's "open a window in a running instance" is
-GTK-only; the macOS version of that was prototyped and closed as not planned. What is left, and what
-this uses, is the AppleScript support added in **Ghostty 1.3**: `split` a terminal, `input text` into
-the result.
-
-Two consequences worth knowing. macOS will ask once for permission to control Ghostty — that is the
-Automation prompt, and declining it leaves the launcher opening no split at all. And AppleScript is
-still marked a preview feature by Ghostty's maintainers, with breaking changes expected in 1.4, so
-this is the part of the setup most likely to need a revisit. `macos-applescript = false` in the
-Ghostty config turns it off entirely.
-
 Panes in a Warp split are always equally sized, so the tab opens half and half. Drag the divider once
 to narrow the pane and Warp remembers it for that config.
+
+### Ghostty
+
+Run the same command, but run it **from inside Ghostty** — the installer picks what to write from
+`TERM_PROGRAM`, so doing this in another terminal quietly gets you a Warp config instead:
+
+```bash
+node sidebar.js --install ~/Documents/GitHub
+```
+
+It writes `~/.local/bin/claude-sidebar` and prints the path. If that directory is not on your `PATH`,
+either add it or say where to put the launcher instead:
+
+```bash
+node sidebar.js --install ~/Documents/GitHub ~/bin/claude-sidebar
+```
+
+After that the pair is one command. Open a Ghostty tab and run it:
+
+```bash
+claude-sidebar
+```
+
+The window splits, Claude starts on the left in the directory you named, and the shell you ran it from
+becomes the pane on the right. Nothing is installed and nothing runs in the background: closing the
+window closes both halves. Rerun `--install` after moving the repo — the launcher holds absolute paths
+and will not follow it.
+
+This needs **Ghostty 1.3 or newer**, which is where AppleScript arrived. Ghostty's About window has the
+version; `ghostty +version` also works if the binary is on your `PATH`, which the app does not do for
+you.
+
+#### The permission it asks for once
+
+The first `claude-sidebar` raises a macOS dialog asking to control "Ghostty". That is Automation
+permission, and this does not work without it — allow it once and it never asks again.
+
+Decline it, or dismiss it by reflex, and you get the worst kind of failure: the launcher opens no
+split, reports nothing, and Claude never starts. Two ways back:
+
+- System Settings → Privacy & Security → Automation, find the app that asked, and switch Ghostty on
+  underneath it.
+- Or clear every answer you have given and be asked again: `tccutil reset AppleEvents`.
+
+One switch defeats all of this: `macos-applescript = false` in `~/.config/ghostty/config` turns
+AppleScript off wholesale, and then no permission helps. It is on by default; you would know if you
+had turned it off.
+
+#### Why a script and not a config
+
+Ghostty has nowhere to put a layout. Its config has no session or workspace key, `new_split` takes a
+direction and nothing else, and a chained keybind cannot type into a split it just made — every action
+in a chain runs against the pane that had focus when the chain started. There is no `ghostty://`
+scheme either, and the CLI's "open a window in a running instance" is GTK-only; the macOS version of
+that was prototyped and closed as not planned.
+
+What is left is the AppleScript support added in 1.3: `split` a terminal, `input text` into the result.
+That is the whole mechanism, and it is why this is a script you run rather than a file you drop
+somewhere. Ghostty's maintainers still label AppleScript a preview feature with breaking changes
+expected in 1.4, so of everything here this is the part most likely to want revisiting.
 
 ## Following the live session
 
