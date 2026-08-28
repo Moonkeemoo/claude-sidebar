@@ -382,7 +382,7 @@ function projectOf(s, st) {
   const dir = repoOf(cwdOf(s), st);
   let info = projInfo.get(dir);
   if (!info) {
-    info = { name: path.basename(dir), repo: githubOf(dir), docs: vercelInDocs(dir) };
+    info = { dir, name: path.basename(dir), repo: githubOf(dir), git: fs.existsSync(path.join(dir, '.git')), docs: vercelInDocs(dir) };
     projInfo.set(dir, info);
   }
   const hosts = new Set(info.docs);
@@ -390,7 +390,120 @@ function projectOf(s, st) {
     const m = u.match(VERCEL_ONE);
     if (m && !PREVIEW.test(m[1])) hosts.add(m[1].toLowerCase());
   }
-  return { name: info.name, repo: info.repo, urls: [...hosts].sort() };
+  return { dir, name: info.name, repo: info.repo, git: info.git, urls: [...hosts].sort() };
+}
+
+// ---- answers that take longer than a frame ----
+// Walking a repo, asking git, listing processes: none of these finish inside the
+// 16 ms a redraw is allowed, and doing them on the render path is how a pane
+// starts to stutter. `slow` returns whatever it has, starts the work if the
+// answer has gone stale, and redraws when the real one lands. One job per key at
+// a time, so a cursor resting on a session cannot pile up a queue.
+const later = new Map();
+
+function slow(key, ttl, run) {
+  const at = later.get(key) || { value: null, at: 0, busy: false };
+  later.set(key, at);
+  if (!at.busy && Date.now() - at.at >= ttl) {
+    at.busy = true;
+    Promise.resolve().then(run).then((v) => { at.value = v; }, () => { })
+      .then(() => { at.busy = false; at.at = Date.now(); draw(); });
+  }
+  return at.value;
+}
+
+function capture(cmd, args, cwd) {
+  return new Promise((done) => {
+    let out = '';
+    let p;
+    try { p = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }); }
+    catch { return done(''); }
+    p.stdout.on('data', (d) => { out += d; });
+    p.on('error', () => done(''));
+    p.on('close', () => done(out));
+  });
+}
+
+// A repo's weight, and the one child directory to blame when there is one. The
+// count is capped because a tree with a quarter of a million files in it is
+// exactly the tree you are asking about, and the answer is already "too much"
+// well before the walk ends.
+const FILE_CAP = 200000;
+
+async function dirSize(dir) {
+  const per = new Map();
+  let total = 0;
+  let seen = 0;
+  const walk = async (d, top) => {
+    if (seen >= FILE_CAP) return;
+    let ents; try { ents = await fs.promises.readdir(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (seen >= FILE_CAP) return;
+      if (e.isSymbolicLink()) continue;
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { await walk(p, top || e.name); continue; }
+      let st; try { st = await fs.promises.stat(p); } catch { continue; }
+      seen++;
+      total += st.size;
+      if (top) per.set(top, (per.get(top) || 0) + st.size);
+    }
+  };
+  await walk(dir, null);
+  const worst = [...per.entries()].sort((a, b) => b[1] - a[1])[0];
+  return {
+    total,
+    capped: seen >= FILE_CAP,
+    // Naming a child is only worth a row when it is most of the answer.
+    blame: worst && worst[1] > total * 0.4 ? { name: worst[0], bytes: worst[1] } : null,
+  };
+}
+
+async function gitState(dir) {
+  const out = await capture('git', ['status', '--porcelain=v1', '-b'], dir);
+  if (!out) return null;
+  const lines = out.split('\n').filter((l) => l.trim());
+  const head = lines.shift() || '';
+  if (!head.startsWith('##')) return null;
+  return {
+    branch: (head.match(/^## ([^\s]+?)(?:\.\.\.|$)/) || [])[1] || '?',
+    ahead: +((head.match(/ahead (\d+)/) || [])[1] || 0),
+    behind: +((head.match(/behind (\d+)/) || [])[1] || 0),
+    dirty: lines.length,
+  };
+}
+
+// Headless browsers a test run walked away from. They hold gigabytes and nothing
+// is ever going to close them. A browser you opened yourself carries no
+// --headless, so it is never counted, and neither is one young enough to still
+// be someone's running test. Windows only: this is where the precedents are.
+const ORPHAN_AGE = 10 * 60 * 1000;
+
+async function orphans() {
+  if (process.platform !== 'win32') return [];
+  const q = "Get-CimInstance Win32_Process -Filter \"Name='chrome.exe' or Name='msedge.exe' or Name='chromium.exe'\""
+    + " | Select-Object Name,CommandLine,WorkingSetSize,CreationDate | ConvertTo-Json -Compress";
+  const out = await capture('powershell', ['-NoProfile', '-NonInteractive', '-Command', q]);
+  let rows; try { rows = JSON.parse(out); } catch { return []; }
+  return orphanRows(Array.isArray(rows) ? rows : rows ? [rows] : [], Date.now());
+}
+
+// CIM writes a date as "/Date(1787659826477)/", so the digits are the whole of
+// it. A process with no CreationDate is treated as new, which keeps it out of
+// the list rather than inventing a stranded one.
+function orphanRows(rows, now, minAge = ORPHAN_AGE) {
+  const by = new Map();
+  for (const r of rows) {
+    if (!r || !r.CommandLine || !/--headless|--remote-debugging-/.test(r.CommandLine)) continue;
+    const born = +String(r.CreationDate || '').replace(/\D/g, '').slice(0, 13) || now;
+    if (now - born < minAge) continue;
+    const key = String(r.Name || '?').replace(/\.exe$/i, '');
+    const cur = by.get(key) || { name: key, n: 0, bytes: 0, born };
+    cur.n++;
+    cur.bytes += +r.WorkingSetSize || 0;
+    cur.born = Math.min(cur.born, born);
+    by.set(key, cur);
+  }
+  return [...by.values()].sort((a, b) => b.bytes - a.bytes);
 }
 
 // Open a link or a file with whatever the OS has registered for it. On Windows
@@ -541,6 +654,9 @@ function shorten(p, w, base) {
 
 const hhmm = (t) => (t ? new Date(t).toTimeString().slice(0, 5) : '  :  ');
 const kb = (n) => (n >= 1048576 ? (n / 1048576).toFixed(1) + 'M' : Math.max(1, Math.round(n / 1024)) + 'K');
+// Directory weights run to gigabytes, and a tenth of one is as much precision as
+// anybody acts on.
+const weigh = (n) => (n >= 1073741824 ? (n / 1073741824).toFixed(1) + 'G' : n >= 1048576 ? Math.round(n / 1048576) + 'M' : Math.max(1, Math.round(n / 1024)) + 'K');
 
 function when(ms) {
   const d = new Date(ms);
@@ -659,14 +775,33 @@ function bodyItems(st, base) {
 // reason the block exists. The folder name rides along only when it differs
 // from the repo — a directory renamed out from under its remote is exactly when
 // you cannot remember which is which.
+const SIZE_TTL = 5 * 60 * 1000;    // a repo does not double in weight in a minute
+const GIT_TTL = 15 * 1000;
+const ORPHAN_TTL = 60 * 1000;
+
+// Branch, then only what is not in order. A clean tree says so in one word
+// rather than in three zeroes.
+function gitRow(g) {
+  const bits = [];
+  if (g.dirty) bits.push(sgr('33', '● змінено ' + g.dirty));
+  if (g.ahead) bits.push(sgr('33', '↑' + g.ahead + ' не запушено'));
+  if (g.behind) bits.push(dim('↓' + g.behind));
+  return '  ' + sgr('1', g.branch) + '  ' + (bits.length ? bits.join('  ') : dim('чисто'));
+}
+
 function projectItems(info) {
   const rows = [];
+  const size = slow('size:' + info.dir, SIZE_TTL, () => dirSize(info.dir));
+  const weight = dim('  ' + (size ? (size.capped ? '>' : '') + weigh(size.total) : '…'));
   if (info.repo) {
     const folder = info.repo.split('/')[1] === info.name ? '' : dim('  ' + info.name);
-    rows.push({ open: 'https://github.com/' + info.repo, text: '  ' + sgr('4;34', 'github.com/' + info.repo) + folder });
+    rows.push({ open: 'https://github.com/' + info.repo, text: '  ' + sgr('4;34', 'github.com/' + info.repo) + folder + weight });
   } else {
-    rows.push({ text: '  ' + info.name + dim('  не git') });
+    rows.push({ text: '  ' + info.name + dim('  не git') + weight });
   }
+  if (size && size.blame) rows.push({ text: dim('    з них ' + size.blame.name + '  ' + weigh(size.blame.bytes)) });
+  const git = info.git ? slow('git:' + info.dir, GIT_TTL, () => gitState(info.dir)) : null;
+  if (git) rows.push({ text: gitRow(git) });
   for (const u of info.urls) rows.push({ open: 'https://' + u, text: '  ' + sgr('4;34', u) });
   return rows;
 }
@@ -711,8 +846,17 @@ function renderWatch() {
   });
   const live_ = activeSessions().map((s) => ({ pick: s.path, text: activeRow(s, s.path === file) }));
 
+  // Only ever a row when something is actually stranded, so an empty machine
+  // costs the pane nothing.
+  const stray = slow('orphans', ORPHAN_TTL, orphans) || [];
+  const strayRows = stray.map((o) => ({
+    text: '  ' + sgr('33', o.name) + dim('  ×' + o.n + '  ' + weigh(o.bytes) + '  від ' + hhmm(o.born)),
+  }));
+
   layout(out, [
     { key: ALIVE, label: 'СЕСІЇ', items: live_, empty: 'нічого не рухалось останні 3 год' },
+    ...(strayRows.length ? [{ key: 'СИРОТИ', label: 'СИРОТИ', items: strayRows }] : []),
+    { key: 'ПРОЄКТ', label: 'ПРОЄКТ', items: projectItems(projectOf({ path: file }, live)) },
     { key: 'ПЛАН', label: 'ПЛАН', items: todos, empty: 'немає активного плану' },
     ...bodyBlocks(live, live.cwd),
   ], H() - 2);

@@ -126,6 +126,29 @@ assert.ok(/hitAt\(hover\)/.test(src), 'the highlight stopped checking that the r
 // those, so the fallback through it is the whole feature.
 assert.ok(/blockAt\[y - 1\] === ALIVE/.test(src), 'tapping the session block no longer falls back to its block');
 
+// ---- a stranded browser is one nobody opened and nobody will close ----
+// The block only ever appears when something is genuinely left over, so the
+// question is entirely what gets let in: the browser you are reading this in
+// must not, and neither must a headless one that a test started a minute ago.
+eval(src.match(/function orphanRows[\s\S]*?\n\}/)[0]);
+const NOW = Date.parse('2026-08-28T22:00:00Z');
+const proc = (cmd, minutes, mb) => ({
+  Name: 'chrome.exe', CommandLine: cmd, WorkingSetSize: mb * 1048576,
+  CreationDate: '/Date(' + (NOW - minutes * 60000) + ')/',
+});
+const stranded = orphanRows([
+  proc('"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" ', 300, 500),   // yours, open right now
+  proc('chrome.exe --headless --remote-debugging-port=9222', 45, 400),
+  proc('chrome.exe --headless --remote-debugging-port=9222', 30, 300),
+  proc('chrome.exe --headless=new', 2, 200),                                         // a test still running
+  { Name: 'chrome.exe', WorkingSetSize: 1, CreationDate: null },                     // no command line at all
+], NOW, 10 * 60 * 1000);
+assert.strictEqual(stranded.length, 1, 'expected one stranded group, got ' + JSON.stringify(stranded));
+assert.strictEqual(stranded[0].n, 2, 'the running test and the browser you opened must both be left out');
+assert.strictEqual(stranded[0].bytes, 700 * 1048576, 'memory is the sum of the stranded ones only');
+assert.strictEqual(stranded[0].born, NOW - 45 * 60000, 'the age shown is the oldest of them');
+assert.deepStrictEqual(orphanRows([], NOW, 1), [], 'nothing running means no block');
+
 // ---- and no control character got baked into the source ----
 // A shell heredoc collapses the escapes in the text it writes: `\b` becomes a
 // backspace byte and `\x1b` an escape. The file still parses, and a regex like

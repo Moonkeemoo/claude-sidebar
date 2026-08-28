@@ -7,7 +7,7 @@ makes it write to a transcript is wrong.
 Commits, comments and docs in English. The strings the pane prints are Ukrainian, because that is
 the language its user reads — keep them Ukrainian.
 
-## Five invariants, and what breaks if you drop them
+## Six invariants, and what breaks if you drop them
 
 **The alternate screen is not optional.** `renderWatch` and `renderPick` repaint the whole pane with
 `\x1b[H\x1b[2J`, up to once a second while a session is active. In a block terminal — Warp — that
@@ -41,6 +41,12 @@ Run it after touching a renderer, `panel`, `layout` or `bodyItems`.
 Windows: no shell, so an `&` or a `|` inside a URL cannot become syntax, and no console window
 flashing up to take the foreground away from Warp before the URI arrives. Keep the guard in
 `openExternal` where it is — `openInTab` fires a URI this program built, and does not need it.
+
+**Nothing slow runs on the render path.** Walking a repo, asking git, listing processes: all of them
+go through `slow(key, ttl, run)`, which hands back whatever answer it already has, starts the work
+when that has gone stale, and calls `draw()` when the real one lands. One job per key at a time, so a
+pointer resting on a session cannot pile up a queue. Call any of them directly from a renderer and
+the pane stops repainting while a `node_modules` gets counted.
 
 **Only the newest `TAIL` bytes of a transcript are parsed.** Transcripts reach 100 MB. `startOffset`
 and `scanSession` both start at `size - TAIL`; the half-cut first line fails `JSON.parse` and

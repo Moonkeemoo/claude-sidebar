@@ -57,12 +57,29 @@ the session was actually about. Move the highlight and the blocks below it switc
 project, media, files and links, so you can find a conversation by what it touched rather than by its
 id.
 
-ПРОЄКТ is the repo the session is working in and the addresses that repo is deployed to, both
-clickable. Sessions are usually started in the directory that holds every repo, so the cwd names no
-project — the files a session touched do, and their first path segment under that directory is the
-repo. The deployments come from the repo's own markdown, one level down at most, plus any
-`*.vercel.app` the conversation itself mentioned; preview URLs are left out, they are dead within
-days and there are far more of them than real ones.
+ПРОЄКТ is the repo the session is working in, what it weighs, what git thinks of it, and the
+addresses it is deployed to — the repo and the addresses clickable. It is on both screens: the live
+view shows it for the session it is following, the list for the one under the highlight.
+
+```
+── ПРОЄКТ 4 ─────────────────────────────────────────
+  github.com/Moonkeemoo/reef            1.2G
+    з них node_modules  840M
+  master  ● змінено 3  ↑2 не запушено
+  reef-money.vercel.app
+```
+
+Sessions are usually started in the directory that holds every repo, so the cwd names no project —
+the files a session touched do, and their first path segment under that directory is the repo. The
+deployments come from the repo's own markdown, one level down at most, plus any `*.vercel.app` the
+conversation itself mentioned; preview URLs are left out, they are dead within days and there are far
+more of them than real ones. The weight names a child directory only when that child is most of the
+answer, which is the only case you can act on.
+
+СИРОТИ appears in the live view when a test run walked away from a headless browser. Nothing else
+puts a row there — a browser you opened yourself carries no `--headless` and is never counted, and
+one younger than ten minutes is still somebody's running test. An empty machine shows no block at
+all. Windows only.
 
 ```
 ── СЕСІЇ 88 1–4 ─────────────────────────────────────
