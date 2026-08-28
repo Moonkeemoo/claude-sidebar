@@ -154,8 +154,9 @@ how every mouse-aware terminal program behaves, not a quirk of this one.
 
 ## Opening a session in its own tab
 
-`Enter`, or a click on the row, opens a new Warp tab in the session's own working directory running
-`claude --resume <id>`. You are back in that conversation with its history intact.
+`Enter`, or a click on the row, opens a new Warp tab split the same way this one is: the session's own
+working directory running `claude --resume <id>`, with a pane of this program beside it. You are back
+in that conversation with its history intact and still watching it.
 
 It works by writing a Warp tab config and then firing `warp://tab_config/claude-resume`. The config is
 rewritten immediately before the URI fires, because a `warp://` link carries no parameters of its own.

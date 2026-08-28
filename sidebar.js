@@ -351,23 +351,41 @@ function openInTab(s) {
   const dir = cwdOf(s);
   const title = (s.title || s.id.slice(0, 8)).replace(/'/g, '').slice(0, 60);
   // TOML literal strings: no escaping, which is what Windows paths need
+  // The same split the pane itself was opened in: the resumed session gets its
+  // own companion rather than sending you back here to change what this one
+  // watches.
   const toml = [
     "name = 'Claude · resume'",
     `title = '${title}'`,
     '',
     '[[panes]]',
-    "id = 'main'",
+    "id = 'root'",
+    "split = 'horizontal'",
+    "children = ['claude', 'sidebar']",
+    '',
+    '[[panes]]',
+    "id = 'claude'",
     "type = 'terminal'",
     `directory = '${dir}'`,
     `commands = ['claude --resume ${s.id}']`,
+    'is_focused = true',
+    '',
+    '[[panes]]',
+    "id = 'sidebar'",
+    "type = 'terminal'",
+    `directory = '${__dirname}'`,
+    `commands = ['node ${path.basename(__filename)}']`,
     '',
   ].join('\n');
   fs.mkdirSync(TABDIR, { recursive: true });
   fs.writeFileSync(path.join(TABDIR, TABNAME + '.toml'), toml, 'utf8');
   const uri = 'warp://tab_config/' + TABNAME;
   if (process.env.SIDEBAR_NO_LAUNCH) return uri;   // write the config, skip the URI
+  // rundll32 rather than `cmd /c start`: start puts a console window on screen
+  // before the URI ever reaches Warp, and whatever Warp considers the active
+  // window at that moment is where the tab lands.
   const child = process.platform === 'win32'
-    ? spawn('cmd', ['/c', 'start', '', uri], { detached: true, stdio: 'ignore', windowsVerbatimArguments: false })
+    ? spawn('rundll32', ['url.dll,FileProtocolHandler', uri], { detached: true, stdio: 'ignore' })
     : spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [uri], { detached: true, stdio: 'ignore' });
   child.unref();
   return uri;

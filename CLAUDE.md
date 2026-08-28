@@ -37,9 +37,10 @@ with `share()`; anything that does not fit scrolls inside its block.
 Run it after touching a renderer, `panel`, `layout` or `bodyItems`.
 
 **`openExternal` is the only path from a transcript to the operating system.** It opens an `http`/
-`https` link or a file that exists, nothing else, and on Windows it goes through `rundll32` rather
-than `cmd /c start` so that an `&` or a `|` inside a URL cannot become shell syntax. `openInTab` may
-keep using `cmd /c start`, because the URI it fires is one this program built. Do not merge the two.
+`https` link or a file that exists, nothing else. Both it and `openInTab` go through `rundll32` on
+Windows: no shell, so an `&` or a `|` inside a URL cannot become syntax, and no console window
+flashing up to take the foreground away from Warp before the URI arrives. Keep the guard in
+`openExternal` where it is — `openInTab` fires a URI this program built, and does not need it.
 
 **Only the newest `TAIL` bytes of a transcript are parsed.** Transcripts reach 100 MB. `startOffset`
 and `scanSession` both start at `size - TAIL`; the half-cut first line fails `JSON.parse` and
