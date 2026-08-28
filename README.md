@@ -65,7 +65,7 @@ media, files and links, so you can find a conversation by what it touched rather
 ── ФАЙЛИ 25 1–4 ─────────────────────────────────────
   21:45 ×20 claude-sidebar/sidebar.js
   …
- ↑↓ вибір · Enter новий таб · колесо гортає блок · Esc назад
+ ↑↓ вибір · клік або Enter відкриває · колесо гортає · Tab назад
 ```
 
 The pane's own labels are Ukrainian.
