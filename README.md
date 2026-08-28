@@ -109,24 +109,35 @@ clipped with an `…`; make it shorter and blocks give up rows to each other and
 
 ```bash
 git clone https://github.com/Moonkeemoo/claude-sidebar.git
+cd claude-sidebar
+node sidebar.js --install ~/Documents/GitHub    # the folder your projects live in
 ```
 
-Nothing to build, nothing to install into `~/.claude`. Run the file where it landed.
+Nothing to build, no dependencies, nothing installed into `~/.claude`. The pane runs from where it
+landed; the one thing `--install` writes is a terminal tab that opens Claude and this pane side by
+side — see [Starting Claude and the pane together](#starting-claude-and-the-pane-together), which is
+also where to look if your terminal is not Warp.
 
 You need Node 18 or newer and a terminal that supports the alternate screen and SGR mouse reporting —
-Warp, Windows Terminal, iTerm2, kitty, WezTerm and GNOME Terminal all do. Without mouse support the
-keyboard still drives everything.
+Warp, Ghostty, Windows Terminal, iTerm2, kitty, WezTerm and GNOME Terminal all do. Without mouse
+support the keyboard still drives everything.
+
+Handing this to someone else is one message to their Claude:
+
+> Clone `https://github.com/Moonkeemoo/claude-sidebar`, read its README, and set it up so I get a
+> terminal tab with Claude Code on the left and the sidebar on the right. My projects live in
+> `~/Documents/GitHub` and my terminal is Ghostty.
 
 ## Run it
 
 Split your terminal — `Ctrl+Shift+D` in Warp — narrow the new pane, and run one of these in it:
 
-```powershell
-node C:\Users\tomoo\Documents\GitHub\claude-sidebar\sidebar.js
-```
-
 ```bash
 node ~/Documents/GitHub/claude-sidebar/sidebar.js
+```
+
+```powershell
+node $HOME\Documents\GitHub\claude-sidebar\sidebar.js
 ```
 
 With no argument it follows the live session. Give it a session id, or any unique prefix of one, and
@@ -206,20 +217,45 @@ A shell cannot split the pane it is running in, and neither can a Claude Code `S
 hook is a child process with no say over the terminal's layout. So there is no way to make typing
 `claude` grow a sidebar next to itself. What works instead is opening a tab that is already split.
 
-`warp/claude.toml` is that tab: Claude Code on the left, this pane on the right.
+In Warp that tab is a tab config, and the pane writes its own:
 
-1. Copy it into your tab config directory, then open it and fix the two `directory` lines — they point
-   at one machine's paths and you will want your own.
+```bash
+node sidebar.js --install                     # Claude starts one directory up
+node sidebar.js --install ~/Documents/GitHub  # or wherever you keep your work
+```
 
-   ```powershell
-   Copy-Item warp\claude.toml "$env:APPDATA\warp\Warp\data\tab_configs\"
-   ```
+The paths inside a tab config are absolute, which is why this is a command rather than a file to copy:
+one committed to the repo would carry someone else's home directory. `--install` fills in where this
+copy of the repo actually landed and where you want Claude to start, and writes `claude.toml` into the
+tab config directory for your platform.
 
-2. Click the `+` at the right of Warp's tab bar. `Claude + sidebar` is now in that menu — click it and
-   the tab opens with both halves already running.
+Then click the `+` at the right of Warp's tab bar. `Claude + sidebar` is in that menu — click it and
+the tab opens with both halves already running. Optionally mark it as the default tab in Warp's
+sidecar panel, and `Ctrl+T` opens the pair every time.
 
-3. Optional: mark the config as the default tab in Warp's sidecar panel. After that `Ctrl+T` opens
-   Claude and the pane together every time, and step 2 stops being a step.
+What it wrote, for reference:
+
+```toml
+name = 'Claude + sidebar'
+
+[[panes]]
+id = 'root'
+split = 'horizontal'
+children = ['claude', 'sidebar']
+
+[[panes]]
+id = 'claude'
+type = 'terminal'
+directory = '/Users/you/Documents/GitHub'
+commands = ['claude']
+is_focused = true
+
+[[panes]]
+id = 'sidebar'
+type = 'terminal'
+directory = '/Users/you/Documents/GitHub/claude-sidebar'
+commands = ['node sidebar.js']
+```
 
 Panes in a Warp split are always equally sized, so the tab opens half and half. Drag the divider once
 to narrow the pane and Warp remembers it for that config.

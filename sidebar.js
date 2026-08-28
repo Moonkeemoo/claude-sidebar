@@ -3,6 +3,8 @@
 //
 //   node sidebar.js                  follow the session that is live right now
 //   node sidebar.js <session-id>     pin one session
+//   node sidebar.js --install [dir]  write the Warp tab that opens Claude beside
+//                                    this pane; dir is where Claude starts
 //
 // Keys:  Tab or S  session list, Tab again closes it · ↑↓ move · Enter open in
 //        a new Warp tab · Esc back · Q quit
@@ -522,8 +524,50 @@ function openExternal(target) {
 // ---- opening a session in a new Warp tab ----
 // warp:// carries no parameters, so the tab config is rewritten just before the
 // URI is fired. Windows path per Warp docs; the file name is the URI name.
-const TABDIR = path.join(process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming'), 'warp', 'Warp', 'data', 'tab_configs');
+// Where Warp keeps tab configs, which is a different place on each platform.
+function tabDir() {
+  if (process.platform === 'win32') {
+    return path.join(process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming'), 'warp', 'Warp', 'data', 'tab_configs');
+  }
+  if (process.platform === 'darwin') return path.join(HOME, '.warp', 'tab_configs');
+  return path.join(process.env.XDG_DATA_HOME || path.join(HOME, '.local', 'share'), 'warp-terminal', 'tab_configs');
+}
+const TABDIR = tabDir();
 const TABNAME = 'claude-resume';
+
+// The paths inside a tab config are absolute, so one committed to a repo is only
+// ever right on the machine that wrote it. `--install` writes the config for
+// wherever this copy actually landed, which is the whole of the setup.
+function install(where) {
+  const work = path.resolve(where || path.dirname(__dirname));
+  const toml = [
+    "name = 'Claude + sidebar'",
+    '',
+    '[[panes]]',
+    "id = 'root'",
+    "split = 'horizontal'",
+    "children = ['claude', 'sidebar']",
+    '',
+    '[[panes]]',
+    "id = 'claude'",
+    "type = 'terminal'",
+    `directory = '${work}'`,
+    "commands = ['claude']",
+    'is_focused = true',
+    '',
+    '[[panes]]',
+    "id = 'sidebar'",
+    "type = 'terminal'",
+    `directory = '${__dirname}'`,
+    `commands = ['node ${path.basename(__filename)}']`,
+    '',
+  ].join('\n');
+  fs.mkdirSync(TABDIR, { recursive: true });
+  fs.writeFileSync(path.join(TABDIR, 'claude.toml'), toml, 'utf8');
+  console.log("Записано " + path.join(TABDIR, 'claude.toml'));
+  console.log("Claude стартуватиме в " + work);
+  console.log("Відкрий меню поруч із + у Warp — там зʼявився «Claude + sidebar».");
+}
 
 function cwdOf(s) {
   try {
@@ -570,14 +614,25 @@ function openInTab(s) {
   fs.writeFileSync(path.join(TABDIR, TABNAME + '.toml'), toml, 'utf8');
   const uri = 'warp://tab_config/' + TABNAME;
   if (process.env.SIDEBAR_NO_LAUNCH) return uri;   // write the config, skip the URI
-  // rundll32 rather than `cmd /c start`: start puts a console window on screen
-  // before the URI ever reaches Warp, and whatever Warp considers the active
-  // window at that moment is where the tab lands.
+  // Warp puts the tab in whatever window is active when the URI lands, and the
+  // window holding this pane is not always that one — a second window opens and
+  // fills itself from the restored session, which reads as a duplicate. Warp
+  // hands every pane a URI pointing at itself, so raising this one first settles
+  // the question before the tab config asks it.
+  const focus = process.env.WARP_FOCUS_URL;
+  if (focus) fireURI(focus);
+  setTimeout(() => fireURI(uri), focus ? 250 : 0);
+  return uri;
+}
+
+// rundll32 rather than `cmd /c start`: start puts a console window on screen
+// before the URI ever reaches Warp, and that window taking the foreground is
+// itself a change of which window is active.
+function fireURI(uri) {
   const child = process.platform === 'win32'
-    ? spawn('rundll32', ['url.dll,FileProtocolHandler', uri], { detached: true, stdio: 'ignore' })
+    ? spawn('rundll32', ['url.dll,FileProtocolHandler', uri], { detached: true, stdio: 'ignore', windowsHide: true })
     : spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [uri], { detached: true, stdio: 'ignore' });
   child.unref();
-  return uri;
 }
 
 // ---- rendering ----
@@ -950,6 +1005,9 @@ function onWheel(y, step) {
 }
 
 // ---- run ----
+// Before the transcript check: a machine that has never run Claude has none, and
+// installing the tab is exactly what you do there first.
+if (arg === '--install') { install(process.argv[3]); process.exit(0); }
 if (!file) { console.error('Транскрипт не знайдено в ' + PROJECTS); process.exit(1); }
 // Alternate screen buffer. Without it every \x1b[H\x1b[2J repaint is appended to
 // the host terminal's scrollback instead of replacing it — in a block terminal
