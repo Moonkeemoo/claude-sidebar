@@ -31,7 +31,8 @@ moving:
 ```
 
 `FILES 16+` with a plus means the count comes from the newest slice of a long transcript, not the
-whole of it. Greyed-out file rows are temp paths.
+whole of it. Greyed-out file rows are temp paths. The MEDIA and LINKS rows are clickable — see
+[Mouse](#mouse).
 
 **The session list** opens on `Tab`. Every Claude session on the machine, newest first, titled by what
 the session was actually about. Move the highlight and the blocks below it switch to that session's
@@ -98,9 +99,18 @@ You never have to switch layouts to drive it. `g` and `G` are the exception, Lat
 
 ### Mouse
 
-In the session list: **click a row to highlight it, click the highlighted row again to open it.** The
-second click does what `Enter` would have done. Scroll the wheel to move through the list three rows
-at a time.
+Links and media are clickable on both screens. **Click a link and it opens in your browser; click an
+image and it opens in your image viewer.** That works in the live view and in the session list alike,
+so you can find an old conversation, see the screenshot you pasted into it, and open it without
+leaving the pane.
+
+In the session list, **click a session row to highlight it, click the highlighted row again to open
+it.** The second click does what `Enter` would have done. Scroll the wheel to move through the list
+three rows at a time.
+
+A click can never run a command. A row opens only an `http`/`https` link or a file that exists on
+disk, and the target is handed to the operating system as one argument rather than through a shell —
+the links come out of transcripts, and a transcript can contain anything.
 
 While the pane is listening for the mouse, selecting text inside it needs `Shift` held down. That is
 how every mouse-aware terminal program behaves, not a quirk of this one.
@@ -183,9 +193,13 @@ when you pinned a session with an argument. Nothing breaks if you skip this.
 node sidebar.test.js
 ```
 
-It renders the session list and checks the two things a click depends on: that the list starts on
-screen row 2, and that a mouse report still resolves to the right button when `Shift` or `Ctrl` is
-held. Both read their expectations out of `sidebar.js` itself, so they cannot quietly drift from it.
+The pane builds two things on every frame: the lines it prints, and a map from each row to what
+clicking it does. Drift between those by a single line and every click lands on the wrong thing while
+the screen still looks right. The test renders both views for real and checks that each clickable row
+actually shows the link or file it claims to open, that the row under the header is the first session,
+that a mouse report resolves to the right button with `Shift` or `Ctrl` held, and that the opener
+still refuses anything but a link or an existing file. Insert one stray line into a renderer and it
+goes red.
 
 ## What it deliberately does not do
 
@@ -205,6 +219,7 @@ and Warp on Windows does not support them anyway.
 | `SIDEBAR_ONCE=1` | render the live view once and exit |
 | `SIDEBAR_ONCE=pick` | render the session list once and exit |
 | `SIDEBAR_NO_LAUNCH=1` | write the tab config, do not fire the URI |
+| `SIDEBAR_HITS=1` | dump the row-to-click map to stderr on every frame |
 
 The `SIDEBAR_ONCE` modes skip the alternate screen and the mouse, so their output pipes cleanly into
 `grep` and friends.

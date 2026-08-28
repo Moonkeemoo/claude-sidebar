@@ -6,8 +6,9 @@
 //
 // Keys:  Tab or S  session list · ↑↓ move · Enter open in a new Warp tab
 //        Esc back · Q quit
-// Mouse: click a row to select it, click the selected row to open it, wheel to
-//        scroll. Selecting text then needs Shift, as in any mouse-aware TUI.
+// Mouse: click a session row to select it, click it again to open it; click a
+//        link or a media file to open that. Wheel scrolls. Selecting text then
+//        needs Shift, as in any mouse-aware TUI.
 // The letter keys accept Latin, Ukrainian and Russian layouts.
 //
 // No dependencies.
@@ -246,6 +247,19 @@ function scanSession(s) {
   return st;
 }
 
+// Open a link or a file with whatever the OS has registered for it. On Windows
+// this stays away from `cmd /c start`: these targets come out of a transcript,
+// and cmd reads an & or a | inside one as its own syntax. rundll32 takes the
+// string as a single argument and never parses it.
+function openExternal(target) {
+  const safe = target.startsWith('http://') || target.startsWith('https://') || fs.existsSync(target);
+  if (!safe) return;
+  const child = process.platform === 'win32'
+    ? spawn('rundll32', ['url.dll,FileProtocolHandler', target], { detached: true, stdio: 'ignore' })
+    : spawn(process.platform === 'darwin' ? 'open' : 'xdg-open', [target], { detached: true, stdio: 'ignore' });
+  child.unref();
+}
+
 // ---- opening a session in a new Warp tab ----
 // warp:// carries no parameters, so the tab config is rewritten just before the
 // URI is fired. Windows path per Warp docs; the file name is the URI name.
@@ -321,14 +335,21 @@ function when(ms) {
   return d.toISOString().slice(5, 10).replace('-', '.') + '    ' + d.toTimeString().slice(0, 5);
 }
 
-// shared block: media, files, links for one state object
-function bodyOf(st, base, limits) {
+// What a click on a row should open, keyed by that row's index in the output
+// array. Screen rows are 1-based, so a click at row y looks up rowHits[y - 1].
+let rowHits = {};
+
+// Media, files and links for one state object. It pushes into the caller's array
+// rather than returning its own, so the indices it records are the final ones.
+function bodyOf(out, st, base, limits) {
   const w = W();
-  const out = [];
   const media = st.media || [];
   if (media.length) {
     out.push(rule('MEDIA', media.length));
-    for (const m of media.slice(0, limits.media)) out.push('  ' + sgr('36', m.name) + dim('  ' + kb(m.size)) + dim('  ' + shorten(m.full, w - 20, base)));
+    for (const m of media.slice(0, limits.media)) {
+      rowHits[out.length] = { open: m.full };
+      out.push('  ' + sgr('36', m.name) + dim('  ' + kb(m.size)) + dim('  ' + shorten(m.full, w - 20, base)));
+    }
   }
   const fl = [...st.files.entries()].sort((a, b) => (b[1].t > a[1].t ? 1 : -1));
   out.push(rule('FILES', fl.length + (st.partial ? '+' : '')));
@@ -340,13 +361,16 @@ function bodyOf(st, base, limits) {
   const lk = [...st.links.entries()].sort((a, b) => (b[1] > a[1] ? 1 : -1));
   out.push(rule('LINKS', lk.length));
   if (!lk.length) out.push(dim('  (порожньо)'));
-  for (const [u] of lk.slice(0, limits.links)) out.push('  ' + sgr('4;34', u.length > w - 4 ? u.slice(0, w - 5) + '…' : u));
-  return out;
+  for (const [u] of lk.slice(0, limits.links)) {
+    rowHits[out.length] = { open: u };
+    out.push('  ' + sgr('4;34', u.length > w - 4 ? u.slice(0, w - 5) + '…' : u));
+  }
 }
 
 function renderWatch() {
   const w = W();
   const out = [];
+  rowHits = {};
   out.push(rule('PLAN'));
   if (!live.todos.length) out.push(dim('  (немає активного плану)'));
   for (const td of live.todos.slice(0, 12)) {
@@ -357,21 +381,20 @@ function renderWatch() {
   }
   out.push('');
   live.media = mediaOf(path.basename(file, '.jsonl'));
-  out.push(...bodyOf(live, live.cwd, { media: 6, files: 14, links: 12 }));
+  bodyOf(out, live, live.cwd, { media: 6, files: 14, links: 12 });
   out.push('');
-  out.push(dim(' Tab — сесії · q — вихід'));
+  out.push(dim(' Tab — сесії · клік по лінку чи медіа відкриє його · q — вихід'));
+  if (process.env.SIDEBAR_HITS) process.stderr.write(JSON.stringify(rowHits));
   process.stdout.write('\x1b[H\x1b[2J' + out.join('\n') + '\n');
 }
 
 function renderPick() {
   const out = [];
+  rowHits = {};
   const rows = H();
   const listRoom = Math.max(3, Math.min(sessions.length, Math.floor((rows - 6) / 2)));
   out.push(rule('SESSIONS', sessions.length));
   const from = Math.min(Math.max(0, cursor - Math.floor(listRoom / 2)), Math.max(0, sessions.length - listRoom));
-  // The header occupies screen row 1, so the row under the pointer is from + y - 2.
-  pickFrom = from;
-  pickCount = Math.min(sessions.length, from + listRoom) - from;
   for (let i = from; i < Math.min(sessions.length, from + listRoom); i++) {
     const s = sessions[i];
     const on = i === cursor;
@@ -379,6 +402,7 @@ function renderPick() {
     const room = W() - stamp.length - 5;
     const t = s.title || '(без назви) ' + s.id.slice(0, 8);
     const body = t.length > room ? t.slice(0, room - 1) + '…' : t;
+    rowHits[out.length] = { session: i };
     out.push(on ? sgr('7', ' ▸ ' + stamp + '  ' + body) : '   ' + dim(stamp) + '  ' + body);
   }
   out.push('');
@@ -386,32 +410,34 @@ function renderPick() {
   if (sel) {
     const st = scanSession(sel);
     const left = rows - out.length - 3;
-    out.push(...bodyOf(st, st.cwd, { media: 3, files: Math.max(2, Math.floor(left * 0.45)), links: Math.max(2, Math.floor(left * 0.3)) }));
+    bodyOf(out, st, st.cwd, { media: 3, files: Math.max(2, Math.floor(left * 0.45)), links: Math.max(2, Math.floor(left * 0.3)) });
   }
   out.push('');
-  out.push(dim(' ↑↓ вибір · Enter новий таб · Esc назад'));
+  out.push(dim(' ↑↓ вибір · Enter новий таб · клік по лінку відкриє · Esc назад'));
+  if (process.env.SIDEBAR_HITS) process.stderr.write(JSON.stringify(rowHits));
   process.stdout.write('\x1b[H\x1b[2J' + out.join('\n') + '\n');
 }
 
 let mode = 'watch';
 let sessions = [];
 let cursor = 0;
-let pickFrom = 0;
-let pickCount = 0;
 const draw = () => (mode === 'pick' ? renderPick() : renderWatch());
 
-// A click lands on a session row; clicking the row that is already selected
-// opens it, which is a double-click without the timing guesswork.
+// Every click resolves through rowHits. A session row highlights, and a second
+// click on the row already highlighted opens it — a double-click without the
+// timing guesswork. A media or link row opens the thing itself. The rest of the
+// screen is inert.
 function onMouse(btn, y, press) {
-  if (mode !== 'pick' || !press) return;
+  if (!press) return;
   const b = btn & ~28;                       // strip shift/alt/ctrl
-  if (b === 64) { cursor = Math.max(0, cursor - 3); return; }
-  if (b === 65) { cursor = Math.min(sessions.length - 1, cursor + 3); return; }
+  if (b === 64) { if (mode === 'pick') cursor = Math.max(0, cursor - 3); return; }
+  if (b === 65) { if (mode === 'pick') cursor = Math.min(sessions.length - 1, cursor + 3); return; }
   if (b !== 0) return;
-  const i = pickFrom + y - 2;
-  if (i < pickFrom || i >= pickFrom + pickCount || i >= sessions.length) return;
-  if (i === cursor) openInTab(sessions[i]);
-  else cursor = i;
+  const hit = rowHits[y - 1];
+  if (!hit) return;
+  if (hit.open) return openExternal(hit.open);
+  if (hit.session === cursor) openInTab(sessions[cursor]);
+  else cursor = hit.session;
 }
 
 // ---- run ----

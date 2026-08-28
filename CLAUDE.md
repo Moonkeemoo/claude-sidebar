@@ -7,7 +7,7 @@ makes it write to a transcript is wrong.
 Commits, comments and docs in English. The strings the pane prints are Ukrainian, because that is
 the language its user reads — keep them Ukrainian.
 
-## Three invariants, and what breaks if you drop them
+## Four invariants, and what breaks if you drop them
 
 **The alternate screen is not optional.** `renderWatch` and `renderPick` repaint the whole pane with
 `\x1b[H\x1b[2J`, up to once a second while a session is active. In a block terminal — Warp — that
@@ -17,9 +17,17 @@ and the terminal went down. `ALT_ON` / `ALT_OFF` fix it by giving the pane its o
 remove them, and keep the `process.on('exit')` restore so a crash does not strand the user on a blank
 screen.
 
-**A click maps to a session as `pickFrom + y - 2`.** That `2` is the SESSIONS header occupying screen
-row 1. Add a line above the list in `renderPick` and every click lands one session off, silently.
-`sidebar.test.js` guards exactly this — run it after touching either function.
+**A renderer that pushes a row must record what clicking it does, in the same breath.** `rowHits` maps
+a row's index in the output array to `{ session }` or `{ open }`, and `onMouse` resolves a click at
+screen row `y` as `rowHits[y - 1]`. Push a line without recording it and the map slips against the
+render: every click below that point lands on the wrong thing, and the screen still looks correct.
+Both renderers reset `rowHits` on entry — keep that. `sidebar.test.js` guards exactly this and goes
+red on a single stray `out.push`; run it after touching either renderer or `bodyOf`.
+
+**`openExternal` is the only path from a transcript to the operating system.** It opens an `http`/
+`https` link or a file that exists, nothing else, and on Windows it goes through `rundll32` rather
+than `cmd /c start` so that an `&` or a `|` inside a URL cannot become shell syntax. `openInTab` may
+keep using `cmd /c start`, because the URI it fires is one this program built. Do not merge the two.
 
 **Only the newest `TAIL` bytes of a transcript are parsed.** Transcripts reach 100 MB. `startOffset`
 and `scanSession` both start at `size - TAIL`; the half-cut first line fails `JSON.parse` and
