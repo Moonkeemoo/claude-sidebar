@@ -59,6 +59,11 @@ grep -c $'\x1b' sidebar.js   # must print 0
 
 If it does not, convert them back — in Python, `t.replace(chr(27), chr(92) + 'x1b')`.
 
+The Edit tool has the same hazard in a narrower form: a `\uXXXX` in the string you hand it
+arrives as the character itself, so an edit anchored on `k === '\u001b'` never matches the
+source it is looking at. `\x1b` survives intact. Anchor on a neighbouring line instead, or patch
+that line with sed.
+
 ## Before claiming a change works
 
 ```bash
