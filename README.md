@@ -54,7 +54,15 @@ of a long transcript rather than the whole of it. Greyed-out file rows are temp 
 
 **The session list** opens on `Tab`. Every Claude session on the machine, newest first, titled by what
 the session was actually about. Move the highlight and the blocks below it switch to that session's
-media, files and links, so you can find a conversation by what it touched rather than by its id.
+project, media, files and links, so you can find a conversation by what it touched rather than by its
+id.
+
+ПРОЄКТ is the repo the session is working in and the addresses that repo is deployed to, both
+clickable. Sessions are usually started in the directory that holds every repo, so the cwd names no
+project — the files a session touched do, and their first path segment under that directory is the
+repo. The deployments come from the repo's own markdown, one level down at most, plus any
+`*.vercel.app` the conversation itself mentioned; preview URLs are left out, they are dead within
+days and there are far more of them than real ones.
 
 ```
 ── СЕСІЇ 88 1–4 ─────────────────────────────────────

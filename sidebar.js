@@ -317,6 +317,82 @@ function scanSession(s) {
   return st;
 }
 
+// ---- the project behind a session ----
+// Sessions are mostly started in the directory that holds every repo, so a
+// session's cwd names no project at all. The files it touched do: their first
+// path segment under that directory is the repo it is really working in.
+const VERCEL = /\b([a-z0-9][a-z0-9-]*\.vercel\.app)\b/gi;
+const VERCEL_ONE = /\b([a-z0-9][a-z0-9-]*\.vercel\.app)\b/i;
+// Preview deployments — <project>-<hash>-<scope> and <project>-git-<branch> —
+// outnumber the real hosts and are dead within days. The address you lose and
+// go looking for is the one you would send someone.
+const PREVIEW = /-[a-z0-9]{9}-|-git-/;
+const DOC_LIMIT = 60;              // markdown files read per repo
+const projInfo = new Map();
+
+function repoOf(cwd, st) {
+  if (fs.existsSync(path.join(cwd, '.git'))) return cwd;
+  const count = new Map();
+  for (const p of st.files.keys()) {
+    const rel = path.relative(cwd, p);
+    if (!rel || rel.startsWith('..') || path.isAbsolute(rel) || !/[\\/]/.test(rel)) continue;
+    const top = rel.split(/[\\/]/)[0];
+    count.set(top, (count.get(top) || 0) + 1);
+  }
+  const best = [...count.entries()].sort((a, b) => b[1] - a[1])[0];
+  const dir = best && path.join(cwd, best[0]);
+  return dir && fs.existsSync(path.join(dir, '.git')) ? dir : cwd;
+}
+
+function githubOf(dir) {
+  try {
+    const cfg = fs.readFileSync(path.join(dir, '.git', 'config'), 'utf8');
+    const m = cfg.match(/github\.com[:/]([\w.-]+\/[\w.-]+?)(?:\.git)?\s/);
+    return m && m[1];
+  } catch { return null; }
+}
+
+// A repo says where it is deployed in its own documentation, one level down at
+// most — README, CLAUDE.md, whatever notes sit beside them.
+function vercelInDocs(dir) {
+  const hosts = new Set();
+  let budget = DOC_LIMIT;
+  const walk = (d, depth) => {
+    let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (budget <= 0) return;
+      if (e.isDirectory()) {
+        if (depth > 0 && e.name[0] !== '.' && e.name !== 'node_modules') walk(path.join(d, e.name), depth - 1);
+        continue;
+      }
+      if (!e.name.endsWith('.md')) continue;
+      budget--;
+      let text; try { text = fs.readFileSync(path.join(d, e.name), 'utf8'); } catch { continue; }
+      let m; VERCEL.lastIndex = 0;
+      while ((m = VERCEL.exec(text))) { const h = m[1].toLowerCase(); if (!PREVIEW.test(h)) hosts.add(h); }
+    }
+  };
+  walk(dir, 1);
+  return [...hosts];
+}
+
+// What the repo documents, plus what this session said out loud. The second is
+// how a deployment made an hour ago shows up before anyone writes it down.
+function projectOf(s, st) {
+  const dir = repoOf(cwdOf(s), st);
+  let info = projInfo.get(dir);
+  if (!info) {
+    info = { name: path.basename(dir), repo: githubOf(dir), docs: vercelInDocs(dir) };
+    projInfo.set(dir, info);
+  }
+  const hosts = new Set(info.docs);
+  for (const u of st.links.keys()) {
+    const m = u.match(VERCEL_ONE);
+    if (m && !PREVIEW.test(m[1])) hosts.add(m[1].toLowerCase());
+  }
+  return { name: info.name, repo: info.repo, urls: [...hosts].sort() };
+}
+
 // Open a link or a file with whatever the OS has registered for it. On Windows
 // this stays away from `cmd /c start`: these targets come out of a transcript,
 // and cmd reads an & or a | inside one as its own syntax. rundll32 takes the
@@ -578,6 +654,23 @@ function bodyItems(st, base) {
   };
 }
 
+// Where the selected session's work lives and what it has been deployed to.
+// Every row here opens in a browser, because losing the address is the whole
+// reason the block exists. The folder name rides along only when it differs
+// from the repo — a directory renamed out from under its remote is exactly when
+// you cannot remember which is which.
+function projectItems(info) {
+  const rows = [];
+  if (info.repo) {
+    const folder = info.repo.split('/')[1] === info.name ? '' : dim('  ' + info.name);
+    rows.push({ open: 'https://github.com/' + info.repo, text: '  ' + sgr('4;34', 'github.com/' + info.repo) + folder });
+  } else {
+    rows.push({ text: '  ' + info.name + dim('  не git') });
+  }
+  for (const u of info.urls) rows.push({ open: 'https://' + u, text: '  ' + sgr('4;34', u) });
+  return rows;
+}
+
 // The blocks below the head of a view, shared by both of them.
 function bodyBlocks(st, base) {
   const b = bodyItems(st, base);
@@ -639,6 +732,7 @@ function renderPick() {
   // so moving the cursor always shows something about what you are pointing at.
   layout(out, [
     { key: LIST, label: 'СЕСІЇ', items, want: Math.max(4, Math.floor(avail / 2)), count: sessions.length, focus: cursor },
+    ...(st ? [{ key: 'ПРОЄКТ', label: 'ПРОЄКТ', items: projectItems(projectOf(sel, st)) }] : []),
     ...(st ? bodyBlocks(st, st.cwd) : []),
   ], avail);
 

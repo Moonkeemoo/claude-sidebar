@@ -126,6 +126,17 @@ assert.ok(/hitAt\(hover\)/.test(src), 'the highlight stopped checking that the r
 // those, so the fallback through it is the whole feature.
 assert.ok(/blockAt\[y - 1\] === ALIVE/.test(src), 'tapping the session block no longer falls back to its block');
 
+// ---- and no control character got baked into the source ----
+// A shell heredoc collapses the escapes in the text it writes: `\b` becomes a
+// backspace byte and `\x1b` an escape. The file still parses, and a regex like
+// /\b(...)\b/ turns into one that matches a literal backspace — that is, matches
+// nothing, on every input, in silence.
+const ctrl = src.split('\n')
+  .map((l, i) => [i + 1, l])
+  .filter(([, l]) => /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(l))   // \r is line endings, not damage
+  .map(([n]) => n);
+assert.deepStrictEqual(ctrl, [], 'control characters in sidebar.js, lines ' + ctrl.join(', '));
+
 assert.ok(/target\.startsWith\('http:\/\/'\)/.test(src), 'openExternal lost its http guard');
 assert.ok(/fs\.existsSync\(target\)/.test(src), 'openExternal lost its existence guard');
 

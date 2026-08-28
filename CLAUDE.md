@@ -53,11 +53,20 @@ Patching this file with a shell heredoc collapses `\\x1b` down to a raw `0x1b` b
 the source as an invisible control character. It still runs, which is why it is easy to miss. After
 any patch that touches an escape sequence:
 
+`sidebar.test.js` fails on any control character in the source, which is the general form of this.
+`\x1b` is not the only one that collapses: `\b` becomes a backspace byte the same way, and a regex
+written `/\b(host)\b/` then asks for a literal backspace on either side — it matches nothing, on
+every input, and says nothing about it. That is how `\b([a-z0-9-]*\.vercel\.app)\b` was quietly
+turned off on 2026-08-28.
+
+The collapse happens whether the heredoc writes the file or feeds a script that writes it: `python -
+<<'PY'` mangles the source before Python ever parses it. To find the damage by hand:
+
 ```bash
-grep -c $'\x1b' sidebar.js   # must print 0
+node -e "require('fs').readFileSync('sidebar.js','utf8').split(/\r?\n/).forEach((l,i)=>{if(/[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(l))console.log(i+1,JSON.stringify(l))})"
 ```
 
-If it does not, convert them back — in Python, `t.replace(chr(27), chr(92) + 'x1b')`.
+Convert them back in Python: `t.replace(chr(27), chr(92) + 'x1b')`, `t.replace(chr(8), chr(92) + 'b')`.
 
 The Edit tool has the same hazard in a narrower form: a `\uXXXX` in the string you hand it
 arrives as the character itself, so an edit anchored on `k === '\u001b'` never matches the
