@@ -214,6 +214,53 @@ You need Node 18 or newer and a terminal that supports the alternate screen and 
 Warp, Ghostty, Windows Terminal, iTerm2, kitty, WezTerm and GNOME Terminal all do. Without mouse
 support the keyboard still drives everything.
 
+### What differs between machines
+
+Everything about sessions — the list, the files, the links, the media, the project and its commits —
+is the same everywhere: it is transcripts and git, and both read the same on any machine. The
+ЗАЛІЗО block is where the operating system shows through.
+
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| CPU | node's own tick counters | same | same |
+| RAM | free pages | `vm_stat`: held, wired and compressed | free pages |
+| VRAM | `nvidia-smi`, when it is on PATH | absent, and no per-process figure exists on any OS | `nvidia-smi` |
+| heaviest programs | `Win32_Process` over CIM | `ps` | `ps` |
+| СИРОТИ (stranded browsers) | yes | no | no |
+| opening a session in its own tab | Warp | Warp, Ghostty | no |
+
+A Mac reads its memory differently on purpose. `os.freemem()` there counts only pages that are free
+this instant, which on a Mac awake for an hour is almost none of them — a pane reporting 97% forever
+reports nothing. `vm_stat` is asked instead, and the three numbers added up are the ones Activity
+Monitor calls Memory Used.
+
+### If you are a Claude setting this up on a Mac
+
+The Mac paths in this file were written on Windows and have never been run on a Mac. They fail
+quietly when they are wrong: `slow()` swallows a throw, so a parser that matches nothing looks
+exactly like a quiet machine — an empty block, no error. Check them rather than trusting them.
+
+Everything platform-specific is four small functions in `sidebar.js`: `psRows` and `cpuTicks100ns`
+parse `ps`, `vmUsed` parses `vm_stat`, and `unixProcesses` is what calls them. `PROC_Q` and
+`orphans` are the Windows halves and never run on a Mac.
+
+```bash
+node sidebar.test.js                              # the parsers are checked against real samples
+ps -Ao pid=,ppid=,rss=,time=,comm= | head -3      # compare with what psRows expects
+vm_stat | head -6                                 # and vmUsed with this
+SIDEBAR_ONCE=1 COLUMNS=100 LINES=44 node sidebar.js
+```
+
+The last one prints a single frame. ЗАЛІЗО should carry a memory figure close to Activity Monitor's,
+and after a few seconds of running the pane for real, four rows of the heaviest programs under the
+chart. An empty spot where those rows belong means a parser missed — fix it in `psRows` or `vmUsed`,
+and add the line that broke it to `sidebar.test.js`, where the samples for both already live.
+
+Three things not to undo while fixing it: no dependencies and one file, the alternate screen (a
+block terminal accumulates frames without it and takes the terminal down with it), and
+`sidebar.test.js` green. `CLAUDE.md` in this repo has the rest, including an editing hazard on
+Windows that does not apply on a Mac but explains the odd-looking code.
+
 Handing this to someone else is one message to their Claude:
 
 > Clone `https://github.com/Moonkeemoo/claude-sidebar`, read its README, and set it up so I get a

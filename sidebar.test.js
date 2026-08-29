@@ -209,6 +209,41 @@ for (const i of rules.slice(1)) {
   assert.ok(watch.blocks[i - 1], 'the blank row on row ' + i + ' belongs to no block');
 }
 
+// ---- the Mac's own tools, parsed the way they actually print ----
+// Neither of these runs on the machine this test does, and both fail silently:
+// slow() swallows a throw, so a parser that matches nothing looks exactly like a
+// quiet machine. The samples below are what ps and vm_stat print on macOS.
+const unix = eval('(function(){'
+  + src.match(/const RUNTIME = [\s\S]*?\nfunction psRows[\s\S]*?\n\}/)[0]
+  + src.match(/function vmUsed[\s\S]*?\n\}/)[0]
+  + '\nreturn { psRows, vmUsed, cpuTicks100ns } })()');
+
+assert.strictEqual(unix.cpuTicks100ns('4:11.62'), 251.62 * 1e7, 'ps prints minutes:seconds for anything short');
+assert.strictEqual(unix.cpuTicks100ns('1:02:03'), 3723 * 1e7, 'and hours once a process has been up a while');
+assert.strictEqual(unix.cpuTicks100ns('2-03:04:05'), 183845 * 1e7, 'and days for a login session');
+assert.strictEqual(unix.cpuTicks100ns('?'), 0, 'anything else is no time at all, not NaN');
+
+const rows = unix.psRows([
+  '  345     1  12345   0:03.21 /usr/libexec/secinitd',
+  '  678   345 456789   4:11.62 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '  PID  PPID    RSS      TIME COMMAND',
+].join('\n'));
+assert.strictEqual(rows.length, 2, 'the header line is not a process: ' + JSON.stringify(rows));
+assert.deepStrictEqual(
+  { n: rows[1].n, ws: rows[1].ws, pp: rows[1].pp },
+  { n: 'Google Chrome', ws: 456789 * 1024, pp: 345 },
+  'a Mac binary lives behind spaces, and rss is kilobytes: ' + JSON.stringify(rows[1])
+);
+
+assert.strictEqual(unix.vmUsed([
+  'Mach Virtual Memory Statistics: (page size of 16384 bytes)',
+  'Pages free:                                 100.',
+  'Pages active:                                10.',
+  'Pages inactive:                            9999.',
+  'Pages wired down:                            20.',
+  'Pages occupied by compressor:                 5.',
+].join('\n')), 35 * 16384, 'used memory is what is held, wired and compressed — the trailing dot is not a digit');
+
 // ---- the load chart spans its grid, and joins its readings into a line ----
 // A reading of 1 belongs on the top row and a reading of 0 on the bottom one,
 // and a jump between two of them has to draw the rows in between: corners with

@@ -634,7 +634,12 @@ function sampleLoad() {
   const di = now.idle - cpuAt.idle;
   cpuAt = now;
   keep(load.cpu, dt > 0 ? 1 - di / dt : 0);
-  keep(load.ram, 1 - os.freemem() / os.totalmem());
+  // A Mac is asked what it means by memory in use; everywhere else free pages
+  // are the answer. The reading holds between refreshes rather than being taken
+  // every second, because it costs a process to take.
+  const used = process.platform === 'darwin' ? slow('mem', PROC_TTL, memUsed) : null;
+  load.used = used || os.totalmem() - os.freemem();
+  keep(load.ram, load.used / os.totalmem());
   const g = slow('gpu', GPU_TTL, gpuMem);
   if (g) { load.gpu = g; keep(load.vram, g.used / g.total); }
 }
@@ -661,15 +666,77 @@ const PROC_Q = [
   '@($r) | ConvertTo-Json -Compress -Depth 3',
 ].join(' ');
 
+// Everywhere that is not Windows, ps says the same things in fewer characters.
+// `comm` is one field and `args` is another, and both hold spaces on a Mac
+// (`/Applications/Google Chrome.app/...`), so they cannot be asked for at once —
+// the second call names the runtimes, whose own name says nothing.
+const RUNTIME = /^(node|claude|python\d?|bun|deno|java|ruby)$/i;
+
+function cpuTicks100ns(t) {
+  const m = String(t).match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$/);
+  if (!m) return 0;
+  const s = (+m[1] || 0) * 86400 + (+m[2] || 0) * 3600 + (+m[3] || 0) * 60 + (+m[4] || 0);
+  return s * 1e7;
+}
+
+// rss is in kilobytes, and the command is the whole of the rest of the line,
+// spaces and all — which is why it has to be last.
+function psRows(out) {
+  const list = [];
+  for (const l of out.split('\n')) {
+    const m = l.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/);
+    if (m) list.push({ id: +m[1], pp: +m[2], ws: +m[3] * 1024, t: cpuTicks100ns(m[4]), n: m[5].trim().replace(/^.*\//, ''), c: '' });
+  }
+  return list;
+}
+
+async function unixProcesses() {
+  const { out } = await capture('ps', ['-Ao', 'pid=,ppid=,rss=,time=,comm=']);
+  const list = psRows(out);
+  const runtimes = list.filter((p) => RUNTIME.test(p.n));
+  if (runtimes.length) {
+    const { out: args } = await capture('ps', ['-o', 'pid=,args=', '-p', runtimes.map((p) => p.id).join(',')]);
+    const byId = new Map(runtimes.map((p) => [p.id, p]));
+    for (const l of args.split('\n')) {
+      const m = l.match(/^\s*(\d+)\s+(.+)$/);
+      if (m && byId.has(+m[1])) byId.get(+m[1]).c = m[2];
+    }
+  }
+  return list;
+}
+
+// What a Mac calls memory in use: what applications hold, what is wired down and
+// what the compressor is sitting on. os.freemem() there counts only pages that
+// are free right now, which on any Mac that has been awake an hour is almost
+// none of them, and a pane reporting 97% forever reports nothing.
+function vmUsed(out) {
+  const page = +((out.match(/page size of (\d+)/) || [])[1]) || 4096;
+  const pages = (k) => +((out.match(new RegExp('Pages ' + k + ':\\s+(\\d+)')) || [])[1]) || 0;
+  const used = (pages('active') + pages('wired down') + pages('occupied by compressor')) * page;
+  return used > 0 ? used : null;
+}
+
+async function memUsed() {
+  const { out } = await capture('vm_stat', []);
+  return vmUsed(out);
+}
+
 let procAt = { at: 0, cpu: new Map() };
 
 // node.exe says nothing; the script it is running says everything. The last
 // script path on the command line is the one node was handed.
 function procName(p) {
   const bare = String(p.n || '?').replace(/\.exe$/i, '');
-  if (!/^node$/i.test(bare)) return bare;
-  const hits = String(p.c || '').match(/[\w.-]+\.(?:m?[jt]s)\b/g);
+  if (isClaude(p)) return 'claude';
+  if (!RUNTIME.test(bare)) return bare;
+  const hits = String(p.c || '').match(/[\w.-]+\.(?:m?[jt]s|py|rb)\b/g);
   return hits ? hits[hits.length - 1] : bare;
+}
+
+// Claude Code is claude.exe on Windows and a node process running a script
+// called claude everywhere else, so the name alone answers only half the time.
+function isClaude(p) {
+  return /^claude(\.exe)?$/i.test(String(p.n || '')) || /[\\/]claude[\\/]/i.test(String(p.c || ''));
 }
 
 // Claude spawns bash, node and browsers, and none of them say so on their own
@@ -678,17 +745,21 @@ function claudeOwned(id, by) {
   for (let i = 0, cur = id; i < 12 && cur; i++) {
     const p = by.get(cur);
     if (!p) return false;
-    if (/^claude\.exe$/i.test(p.n)) return true;
+    if (isClaude(p)) return true;
     cur = p.pp;
   }
   return false;
 }
 
-async function processes() {
-  if (process.platform !== 'win32') return null;
+async function winProcesses() {
   const { out } = await capture('powershell', ['-NoProfile', '-NonInteractive', '-Command', PROC_Q]);
   let list; try { list = JSON.parse(out); } catch { return null; }
-  if (!Array.isArray(list)) return null;
+  return Array.isArray(list) ? list : null;
+}
+
+async function processes() {
+  const list = process.platform === 'win32' ? await winProcesses() : await unixProcesses();
+  if (!list || !list.length) return null;
   const by = new Map(list.map((p) => [p.id, p]));
   const now = Date.now();
   const span = now - procAt.at;
@@ -1328,7 +1399,7 @@ function loadRows() {
   const h = Math.max(3, Math.min(8, Math.round((H() - 2) * 0.3)));
   const n = Math.max(8, Math.min(HIST, W() - 6));
   const note = {
-    ram: () => weigh(os.totalmem() - os.freemem()) + '/' + weigh(os.totalmem()),
+    ram: () => weigh(load.used || os.totalmem() - os.freemem()) + '/' + weigh(os.totalmem()),
     vram: () => (load.gpu ? weigh(load.gpu.used) + '/' + weigh(load.gpu.total) : ''),
   };
   const legend = SERIES.filter((s) => load[s.key].length).map((s) => {
