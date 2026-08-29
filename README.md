@@ -13,22 +13,27 @@ Node only, no dependencies, one file. It reads transcripts and never writes to t
 ## The two screens
 
 **The live view** is what you get on start. It opens with every session that has moved in the last
-three hours, then the plan, media, files and links of the one it is following:
+three hours, then what the machine is doing, then the plan, media, files and links of the session it
+is following:
 
 ```
 ── СЕСІЇ 5 1–3 ──────────────────────────────────────
  ● зараз  Status line modific  Bash git push
  ◐  2 хв  Reef сессія - варп   чекає на тебе
  ◑ 1 год  Пошук інструменту    Edit sidebar.js
+── ЗАЛІЗО ───────────────────────────────────────────
+  CPU  ▂▃▅▇▆▄▂▂  31%
+  RAM  ▄▄▄▅▅▅▅▅  56%  17.9G/31.9G
+  VRAM ▂▂▃▃▃▄▄▄  24%  3.8G/16.0G
 ── ПЛАН 3 ───────────────────────────────────────────
   ✓ Diagnose why Warp closed
   ▸ Make the session rows clickable
   · Write the README
 ── МЕДІА 1 ──────────────────────────────────────────
   1.png  121K  image-cache/9de93e09…/1.png
-── ФАЙЛИ 25 1–4 ─────────────────────────────────────
-  20:27 ×11 ~/.claude/sidebar.js
-  20:17 statusline.js
+── ФАЙЛИ 6 1–2 ──────────────────────────────────────
+  20:27 docs/plan.md
+  20:17 showcase/dashboard.html
 ── ЛІНКИ 17 ─────────────────────────────────────────
   https://docs.warp.dev/terminal/windows/tab-configs/
 
@@ -49,10 +54,19 @@ several running in parallel that is the state easiest to lose track of. The sess
 holding carries a `▸` and its name in cyan — worth a glance, because the pane deliberately stays on
 it while other rows move.
 
-`── ФАЙЛИ 25 1–4 ──` means the block holds 25 rows and is showing the first four of them — scroll it
-to see the rest. `FILES 16+` with a plus is a different thing: the count comes from the newest slice
+`── ФАЙЛИ 6 1–2 ──` means the block holds six rows and is showing the first two of them — scroll it
+to see the rest. `ФАЙЛИ 6+` with a plus is a different thing: the count comes from the newest slice
 of a long transcript rather than the whole of it. Greyed-out file rows are temp paths. The МЕДІА and
 ЛІНКИ rows are clickable — see [Mouse](#mouse).
+
+ФАЙЛИ holds only what a person opens and looks at: notes, pages, screenshots, PDFs. A session touches
+far more than that, and a list of sources, configs and probe scripts, each carrying the number of
+times it was written to, records the work instead of offering anything to click. One file arriving
+under two names — absolute from an `Edit`, relative from a shell line — is one row.
+
+ЗАЛІЗО is the machine rather than the session: one sample a second, kept back as far as the pane is
+wide, so a build that is eating the box is visible from the pane you already have open. VRAM comes
+from `nvidia-smi`; where that is not on PATH the row simply does not appear.
 
 **The session list** opens on `Tab`. Every Claude session on the machine, newest first, titled by what
 the session was actually about. Move the highlight and the blocks below it switch to that session's
@@ -93,8 +107,8 @@ all. Windows only.
  ◐ сьогодні 21:44  Reef сессія - варп закрився
  ◑ сьогодні 20:27  Пошук інструменту для гуманізації
  ○ вчора    18:02  Mono card API balance tracking
-── ФАЙЛИ 25 1–4 ─────────────────────────────────────
-  21:45 ×20 claude-sidebar/sidebar.js
+── ФАЙЛИ 6 1–2 ──────────────────────────────────────
+  21:45 claude-sidebar/README.md
   …
  ↑↓ вибір · клік перемикає панель · Enter відкриває табом · Tab назад
 ```

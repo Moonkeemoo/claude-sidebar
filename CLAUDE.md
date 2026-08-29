@@ -15,7 +15,8 @@ sequence does not replace the previous frame, it appends. On 2026-08-28 Warp acc
 until Windows flagged `warp.exe` with `RADAR_PRE_LEAK_64` three minutes after the pane was opened,
 and the terminal went down. `ALT_ON` / `ALT_OFF` fix it by giving the pane its own buffer. Do not
 remove them, and keep the `process.on('exit')` restore so a crash does not strand the user on a blank
-screen.
+screen. Since ЗАЛІЗО the tick repaints every second whether or not the transcript moved, so the
+alternate screen is now what the pane rests on all day rather than only while a session is running.
 
 **Rows reach the screen through `panel()`, and nothing else may push one.** It is what records
 `rowHits[i]` (what a click there opens) and `blockAt[i]` (which block the wheel should move), and what

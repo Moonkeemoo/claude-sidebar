@@ -549,6 +549,48 @@ function orphanRows(rows, now, minAge = ORPHAN_AGE) {
   return [...by.values()].sort((a, b) => b.bytes - a.bytes);
 }
 
+// ---- what the machine is doing ----
+// The pane sits open all day next to a session that compiles, renders and starts
+// browsers, so the load belongs on it. One sample a second, kept back only as far
+// as the pane is wide. CPU comes off the tick counters node already keeps; VRAM
+// needs nvidia-smi, and its absence is a row that never appears.
+const GPU_TTL = 3000;
+const HIST = 64;
+const load = { cpu: [], ram: [], vram: [], gpu: null };
+let cpuAt = cpuTicks();
+
+function cpuTicks() {
+  let idle = 0, total = 0;
+  for (const c of os.cpus()) {
+    idle += c.times.idle;
+    for (const k in c.times) total += c.times[k];
+  }
+  return { idle, total };
+}
+
+function gpuMem() {
+  return capture('nvidia-smi', ['--query-gpu=memory.used,memory.total', '--format=csv,noheader,nounits'])
+    .then(({ out }) => {
+      const [used, total] = out.trim().split(/\s*,\s*/).map(Number);
+      return total > 0 ? { used: used * 1048576, total: total * 1048576 } : null;
+    });
+}
+
+function keep(series, v) { series.push(v); if (series.length > HIST) series.shift(); }
+
+// Called from the tick, never from a renderer: os.cpus() walks every core and
+// nvidia-smi is a process, and neither belongs on the render path.
+function sampleLoad() {
+  const now = cpuTicks();
+  const dt = now.total - cpuAt.total;
+  const di = now.idle - cpuAt.idle;
+  cpuAt = now;
+  keep(load.cpu, dt > 0 ? 1 - di / dt : 0);
+  keep(load.ram, 1 - os.freemem() / os.totalmem());
+  const g = slow('gpu', GPU_TTL, gpuMem);
+  if (g) { load.gpu = g; keep(load.vram, g.used / g.total); }
+}
+
 // Open a link or a file with whatever the OS has registered for it. On Windows
 // this stays away from `cmd /c start`: these targets come out of a transcript,
 // and cmd reads an & or a | inside one as its own syntax. rundll32 takes the
@@ -967,6 +1009,32 @@ function pickRow(s, on) {
 // The three blocks a session's body is made of, as items rather than lines, so
 // the layout can decide how many of each actually fit. Long values are left
 // whole here — clip() cuts them to the pane's width as they are printed.
+// Of everything a session writes, three kinds are worth a click: notes to read,
+// pages to look at, screenshots to check. Sources, configs, probe scripts and
+// the half-guessed paths that come out of shell commands are the work itself,
+// and the row that says a file was touched forty-seven times says nothing you
+// can act on. The filter is here rather than in `noteFile`, because `repoOf`
+// places a session by every path it touched, most of them source.
+const KEEP = /\.(md|html?|png|jpe?g|gif|webp|svg|pdf)$/i;
+
+// One file reaches the transcript under several names — absolute from an Edit,
+// relative from a shell line — and on a list this short, two rows for one file
+// is half the block. Rows that read the same are the same file; the absolute
+// spelling is the one kept, because it is the one that opens. A row opens its
+// file, and plenty of the paths guessed out of shell commands do not exist —
+// openExternal is what says no.
+function fileRows(st, w, base) {
+  const by = new Map();
+  for (const [p, meta] of [...st.files.entries()].sort((a, b) => (b[1].t > a[1].t ? 1 : -1))) {
+    if (!KEEP.test(p)) continue;
+    const label = shorten(p, w - 12, base);
+    const cur = by.get(strip(label));
+    if (!cur) by.set(strip(label), { p, text: '  ' + dim(hhmm(meta.t)) + ' ' + label });
+    else if (path.isAbsolute(p) && !path.isAbsolute(cur.p)) cur.p = p;
+  }
+  return [...by.values()].map(({ p, text }) => ({ open: p, text: TEMP.test(p) ? dim(strip(text)) : text }));
+}
+
 function bodyItems(st, base) {
   const w = W();
   return {
@@ -974,18 +1042,33 @@ function bodyItems(st, base) {
       open: m.full,
       text: '  ' + sgr('36', m.name) + dim('  ' + kb(m.size)) + dim('  ' + shorten(m.full, w - 20, base)),
     })),
-    files: [...st.files.entries()]
-      .sort((a, b) => (b[1].t > a[1].t ? 1 : -1))
-      .map(([p, meta]) => {
-        const line = '  ' + dim(hhmm(meta.t)) + ' ' + (meta.n > 1 ? dim('×' + meta.n + ' ') : '') + shorten(p, w - 12, base);
-        // A file row opens the file. Paths here are partly guessed out of shell
-        // commands, so plenty of them do not exist — openExternal is what says no.
-        return { open: p, text: TEMP.test(p) ? dim(strip(line)) : line };
-      }),
+    files: fileRows(st, w, base),
     links: [...st.links.entries()]
       .sort((a, b) => (b[1] > a[1] ? 1 : -1))
       .map(([u]) => ({ open: u, text: '  ' + sgr('4;34', u) })),
   };
+}
+
+// The newest sample sits on the right, the number beside it. The bar is padded
+// from the left, so a pane that has just opened does not walk its numbers across
+// the screen while the history fills up.
+function spark(series, n) {
+  return series.slice(-n).map((v) => '▁▂▃▄▅▆▇█'[Math.max(0, Math.min(7, Math.round(v * 7)))]).join('').padStart(n);
+}
+
+function loadRows() {
+  const n = Math.max(8, Math.min(HIST, W() - 30));
+  const row = (label, series, note) => {
+    const v = series.length ? series[series.length - 1] : 0;
+    const num = (Math.round(v * 100) + '%').padStart(4);
+    return { text: '  ' + dim(label) + ' ' + spark(series, n) + ' ' + (v >= 0.85 ? sgr('33', num) : num) + dim(note ? '  ' + note : '') };
+  };
+  const rows = [
+    row('CPU ', load.cpu),
+    row('RAM ', load.ram, weigh(os.totalmem() - os.freemem()) + '/' + weigh(os.totalmem())),
+  ];
+  if (load.gpu) rows.push(row('VRAM', load.vram, weigh(load.gpu.used) + '/' + weigh(load.gpu.total)));
+  return rows;
 }
 
 // Where the selected session's work lives and what it has been deployed to.
@@ -1074,6 +1157,7 @@ function renderWatch() {
   layout(out, [
     { key: ALIVE, label: 'СЕСІЇ', items: live_, empty: 'нічого не рухалось останні 3 год' },
     ...(strayRows.length ? [{ key: 'СИРОТИ', label: 'СИРОТИ', items: strayRows }] : []),
+    { key: 'ЗАЛІЗО', label: 'ЗАЛІЗО', items: loadRows(), count: '' },
     { key: 'ПРОЄКТ', label: 'ПРОЄКТ', items: projectItems(projectOf({ path: file }, live)) },
     { key: 'ПЛАН', label: 'ПЛАН', items: todos, empty: 'немає активного плану' },
     ...bodyBlocks(live, live.cwd),
@@ -1204,6 +1288,7 @@ process.on('SIGINT', bye);
 process.on('exit', () => process.stdout.write('\x1b[?25h' + (ALT ? ALT_OFF : '\n')));
 
 readNew();
+sampleLoad();                               // so the first frame already knows what the machine is doing
 if (process.env.SIDEBAR_ONCE) {
   if (process.env.SIDEBAR_ONCE === 'pick') { sessions = listSessions(); mode = 'pick'; }
   draw(); showCursor(); process.exit(0);
@@ -1239,6 +1324,7 @@ if (process.stdin.isTTY) {
 }
 
 setInterval(() => {
+  sampleLoad();                            // the graph fills while the picker is open too
   if (mode === 'pick') return;
   if (!pinned) {
     const a = fromStatusline();
@@ -1246,6 +1332,7 @@ setInterval(() => {
     const next = pinned || findTranscript();
     if (next && next !== file) resetLive(next);
   }
-  if (readNew()) draw();
+  readNew();
+  draw();                                  // once a second, because the graph moves on its own
 }, 1000);
 process.stdout.on('resize', draw);

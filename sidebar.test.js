@@ -190,6 +190,20 @@ assert.deepStrictEqual(vercelInDocs(docs), ['live-app.vercel.app'], 'the host in
 assert.ok(!vercelInDocs(__dirname).includes('reef-money.vercel.app'), 'our own README example is being read as our deployment');
 fs.rmSync(docs, { recursive: true, force: true });
 
+// ---- the files block offers what is worth opening ----
+// The fixture session edits a source file and writes a note. Only one of those
+// is something its user ever wants to look at, and the other one is the work.
+const watch = render('1');
+const opens = Object.values(watch.hits).map((h) => h.open).filter((o) => o && !/^https?:/.test(o));
+assert.ok(opens.some((o) => o.endsWith('README.md')), 'the note the session wrote is not in the block');
+assert.ok(!opens.some((o) => /\.js$/.test(o)), 'a source file is still listed: ' + opens.join(' '));
+
+// ---- the load graph stays inside its ramp and its column ----
+eval(src.match(/function spark[\s\S]*?\n\}/)[0]);
+assert.strictEqual(spark([0, 0.5, 1], 3), '▁▅█', 'the ramp must span the whole series');
+assert.strictEqual(spark([1], 3), '  █', 'a short history pads from the left, so the numbers beside it hold one column');
+assert.strictEqual(spark([2, -1], 2), '█▁', 'a reading outside 0..1 must still land inside the ramp');
+
 // ---- and no control character got baked into the source ----
 // A shell heredoc collapses the escapes in the text it writes: `\b` becomes a
 // backspace byte and `\x1b` an escape. The file still parses, and a regex like
