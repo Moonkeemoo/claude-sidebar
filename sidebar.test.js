@@ -213,7 +213,29 @@ for (const i of rules.slice(1)) {
 // A result is a string on some calls and a list of blocks on others; a call is
 // timed by the gap to the result carrying its id; and the context is the newest
 // prompt, not the sum of every prompt ever sent.
-const stat = eval('(function(){' + src.match(/const BIG_N = [\s\S]*?\nfunction statLine[\s\S]*?\n\}/)[0] + '\nreturn { newStats, statLine } })()');
+const stat = eval('(function(){' + src.match(/function newStats\(\)[\s\S]*?\nfunction statLine[\s\S]*?\n\}/)[0] + '\nreturn { newStats, statLine, askedIn } })()');
+
+// A round is one ask and everything the model did about it, so what counts as an
+// ask decides the whole table. A tool result is not one, a harness reminder is
+// not one, and a pasted screenshot is a mark rather than the path it arrived as.
+assert.strictEqual(stat.askedIn({ content: 'зроби графік' }), 'зроби графік', 'a plain message is the ask');
+assert.strictEqual(stat.askedIn({ content: [{ type: 'tool_result', content: 'ok' }] }), null, 'a tool result is not an ask');
+assert.strictEqual(stat.askedIn({ content: '<system-reminder>щось</system-reminder>' }), null, 'a reminder the harness injected is not an ask');
+assert.strictEqual(
+  stat.askedIn({ content: [{ type: 'text', text: '[Image: source: C:\\path\\1.png]' }, { type: 'text', text: 'глянь отут' }] }),
+  'глянь отут',
+  'the words are the ask, wherever in the message they sit; the path is not'
+);
+assert.strictEqual(
+  stat.askedIn({ content: [{ type: 'text', text: '[Image: source: shot.png]' }] }),
+  null,
+  'the path the harness echoes after a paste is the same ask arriving twice'
+);
+assert.strictEqual(
+  stat.askedIn({ content: [{ type: 'text', text: '[Image #2]' }] }),
+  '▣',
+  'a screenshot with nothing said is still an ask'
+);
 const spent = stat.newStats();
 const when = (s) => new Date(Date.parse('2026-08-29T10:00:00Z') + s * 1000).toISOString();
 for (const [ts, message] of [
@@ -235,6 +257,22 @@ assert.strictEqual(spent.open.size, 1, 'the call with no result yet is what "sti
 assert.strictEqual(spent.ctx, 325, 'context is the newest prompt: fresh, cached and written');
 assert.deepStrictEqual([spent.out, spent.think, spent.turns], [70, 40, 1], 'output, thinking and turns come off usage');
 assert.strictEqual(spent.model, 'opus-5', 'the model name is shown without its vendor prefix');
+
+// ---- a session with an agent out is working, not waiting on its human ----
+// The turn that dispatched an agent ends; the agent keeps going. Reading only
+// the newest assistant record calls that "чекає на тебе", which is the one lie
+// the pane can tell that costs an hour.
+eval(src.match(/function agentOut[\s\S]*?\n\}/)[0]);
+const dispatch = (id, ts) => JSON.stringify({ type: 'assistant', timestamp: ts, message: { content: [{ type: 'tool_use', id, name: 'Agent', input: { description: 'crunch' } }] } });
+const back = (id, ts) => JSON.stringify({ type: 'user', timestamp: ts, message: { content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] } });
+
+assert.strictEqual(agentOut([dispatch('x', at), back('x', at)]), null, 'an agent that came back is not still out');
+assert.strictEqual(agentOut(['', 'not json', dispatch('y', at)]).what, 'crunch', 'the agent still out is the one reported');
+assert.strictEqual(
+  agentOut([dispatch('a', '2026-08-29T10:00:00Z'), dispatch('b', '2026-08-29T10:05:00Z'), back('b', '2026-08-29T10:06:00Z')]).at,
+  Date.parse('2026-08-29T10:00:00Z'),
+  'the oldest one still out is what the row counts from'
+);
 
 // ---- a dispatched agent is closed by its own result, not by the next one ----
 // The result arrives in a later message carrying only the id of the call it

@@ -261,11 +261,33 @@ function toolArg(call) {
 // is still moving, no tool call means the turn ended and it is waiting on its
 // human. That second state is the one worth seeing across a row of sessions —
 // it is a session that stopped and will not restart on its own.
+// A dispatched agent keeps working after the turn that sent it has ended, so a
+// session with one still out is not waiting on you — it is waiting on the agent.
+// The row that says otherwise is the one lie this pane can tell that costs an
+// hour. A result closes the agent whose id it carries; the oldest of whatever is
+// left is what the row reports.
+function agentOut(lines) {
+  const out = new Map();
+  for (const l of lines) {
+    if (!l.trim()) continue;
+    let d; try { d = JSON.parse(l); } catch { continue; }
+    const c = (d.message || {}).content;
+    if (!Array.isArray(c)) continue;
+    for (const b of c) {
+      if (!b || typeof b !== 'object') continue;
+      if (b.type === 'tool_use' && b.name === 'Agent' && b.id) {
+        out.set(b.id, { what: (b.input || {}).description || 'агент', at: Date.parse(d.timestamp || '') || 0 });
+      } else if (b.type === 'tool_result') out.delete(b.tool_use_id);
+    }
+  }
+  return [...out.values()].sort((a, b) => a.at - b.at)[0] || null;
+}
+
 const stateCache = new Map();
 function stateOf(s) {
   const hit = stateCache.get(s.path);
   if (hit && hit.mtime === s.mtime) return hit.st;
-  const st = { waiting: false, tool: null };
+  const st = { waiting: false, tool: null, agent: null };
   try {
     const from = Math.max(0, s.size - 65536);
     const lines = readSlice(s.path, from, Math.min(s.size, 65536)).split('\n');
@@ -280,6 +302,7 @@ function stateOf(s) {
       st.waiting = !call;
       break;
     }
+    st.agent = agentOut(lines);
   } catch { }
   stateCache.set(s.path, { mtime: s.mtime, st });
   return st;
@@ -1130,7 +1153,6 @@ function fireURI(uri) {
 const STAT_TTL = 30 * 1000;
 const STAT_CHUNK = 8 * 1024 * 1024;
 
-const BIG_N = 5;                   // single results kept as the expensive ones
 
 function newStats() {
   return {
@@ -1139,8 +1161,30 @@ function newStats() {
     // Per turn, so the screen can draw the session rather than sum it: where the
     // context grew and where it was cut back, and when the work actually
     // happened as against when the session was open.
-    marks: [], big: [],
+    marks: [], rounds: [], base: 0, toolChars: 0,
   };
+}
+
+// A round is one thing asked and everything the model did about it. The
+// transcript marks it with a user message that is not a tool result and not one
+// of the reminders the harness injects, which all arrive wrapped in a tag.
+function askedIn(m) {
+  const c = m.content;
+  // Every text block, not the first: a message with a screenshot in it arrives
+  // as the path in one block and the words in another, and the words are the ask.
+  const s = typeof c === 'string' ? c
+    : Array.isArray(c) ? c.filter((b) => b && b.type === 'text' && b.text).map((b) => b.text).join(' ') : '';
+  const text = String(s)
+    .replace(/<[^>]*>[\s\S]*?<\/[^>]*>/g, ' ')
+    .replace(/\[Image[^\]]*\]/g, '▣')
+    .replace(/\s+/g, ' ').trim();
+  // The harness echoes a pasted screenshot as a second message holding nothing
+  // but its path. That is the same ask arriving twice, and counting it as a new
+  // one takes the turns off the message that actually asked something.
+  if (/^\s*\[Image: source:[^\]]*\]\s*$/.test(String(s))) return null;
+  if (!text || text.startsWith('<')) return null;
+  const words = text.replace(/▣/g, ' ').replace(/\s+/g, ' ').trim();
+  return words || '▣';                    // a screenshot with nothing said is still an ask
 }
 
 // What a call was about, in the few words its input carries. It is kept for
@@ -1172,6 +1216,10 @@ function statLine(s, line) {
   const t = Date.parse(d.timestamp || '') || 0;
   if (t) { s.from = s.from ? Math.min(s.from, t) : t; s.to = Math.max(s.to, t); }
   const m = d.message || {};
+  if (d.type === 'user') {
+    const asked = askedIn(m);
+    if (asked) s.rounds.push({ at: t, text: asked, out: 0, wrote: 0, turns: 0, ctx0: s.ctx, ctx: s.ctx });
+  }
   const u = m.usage;
   if (u) {
     s.turns++;
@@ -1184,6 +1232,18 @@ function statLine(s, line) {
     s.ctx = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
     if (m.model) s.model = String(m.model).replace(/^claude-/, '');
     s.marks.push({ t, ctx: s.ctx, out: u.output_tokens || 0, err: 0 });
+    // The first prompt of a session is everything that is in the window before
+    // anything is said: the system prompt, every tool definition, the memory
+    // files. Nothing later can separate those out, and this measures them.
+    if (!s.base) s.base = s.ctx;
+    const r = s.rounds[s.rounds.length - 1];
+    if (r) {
+      r.turns++;
+      r.out += u.output_tokens || 0;
+      r.wrote += u.cache_creation_input_tokens || 0;
+      r.ctx = s.ctx;
+      r.to = t;
+    }
   }
   if (!Array.isArray(m.content)) return;
   for (const b of m.content) {
@@ -1202,17 +1262,10 @@ function statLine(s, line) {
         s.open.delete(b.tool_use_id);
       }
       e.bytes += bytes;
+      s.toolChars += bytes;
       if (b.is_error) {
         e.errors++;
         if (s.marks.length) s.marks[s.marks.length - 1].err++;
-      }
-      // The five biggest single results, which is where a leak looks like one
-      // call rather than like a tool. Kept by insertion rather than by sorting
-      // the lot at the end, because the lot is every result in the session.
-      if (!s.big.length || bytes > s.big[s.big.length - 1].bytes || s.big.length < BIG_N) {
-        s.big.push({ name: was ? was.name : '?', brief: was ? was.brief : '', bytes, ms, at: t });
-        s.big.sort((a, c) => c.bytes - a.bytes);
-        s.big.length = Math.min(s.big.length, BIG_N);
       }
     }
   }
@@ -1384,12 +1437,13 @@ function layout(out, blocks, avail) {
 // Reading a transcript's tail to see what it is doing is only worth it for a
 // session that moved recently. Older ones are cold by definition.
 function stateFor(s) {
-  return Date.now() - s.mtime > RECENT ? { waiting: false, tool: null } : stateOf(s);
+  return Date.now() - s.mtime > RECENT ? { waiting: false, tool: null, agent: null } : stateOf(s);
 }
 
 function iconFor(s, st) {
   const age = Date.now() - s.mtime;
   if (age > RECENT) return dim('○');
+  if (st.agent) return sgr('1;36', '◉');       // an agent is out; the session is not idle
   if (st.waiting) return sgr('1;33', '◐');
   return age < 90000 ? sgr('1;32', '●') : sgr('33', '◑');
 }
@@ -1402,7 +1456,8 @@ function activeRow(s, self) {
   const stamp = ago(Date.now() - s.mtime).padStart(5);
   const room = Math.max(10, Math.floor((W() - 12) * 0.5));
   const name = (s.title || projOf(s) || s.id.slice(0, 8)).slice(0, room).padEnd(room);
-  const note = st.waiting ? sgr('33', 'чекає на тебе') : dim(st.tool || 'працює');
+  const note = st.agent ? sgr('36', 'агент ' + (st.agent.at ? ago(Date.now() - st.agent.at) : 'в роботі'))
+    : st.waiting ? sgr('33', 'чекає на тебе') : dim(st.tool || 'працює');
   // The pane holds one session and no longer swaps to whoever moved last, so
   // which row it is holding has to be readable at a glance, not inferred from
   // a shade of the name.
@@ -1805,6 +1860,14 @@ function renderWatch() {
 
 // A count as a person reads it: thousands and millions, two significant figures
 // where it matters and none where it does not.
+// 21 запит, 24 запити, 25 запитів — the one place the pane counts things in
+// a sentence rather than in a column.
+function plural(n, one, few, many) {
+  const a = Math.abs(n) % 100;
+  const b = a % 10;
+  return n + ' ' + (a > 10 && a < 20 ? many : b === 1 ? one : b > 1 && b < 5 ? few : many);
+}
+
 const num = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1000 ? Math.round(n / 1000) + 'k' : String(Math.round(n)));
 
 function span(ms) {
@@ -1895,13 +1958,47 @@ function bandRows(s, n) {
   ];
 }
 
-// One call, not one tool: a leak is often a single result nobody looked at.
-function bigRows(s) {
-  const room = Math.max(12, W() - 30);
-  return s.big.filter((b) => b.bytes).map((b) => ({
-    text: '  ' + cell(clip(b.name, 12), 12) + cell(num(b.bytes / 4), 6, true)
-      + dim(cell(b.ms > 1000 ? Math.round(b.ms / 1000) + ' с' : '', 6, true)) + '  ' + dim(clip(b.brief, room)),
-  }));
+const ASK_N = 6;                   // rounds shown
+
+// What the window is made of, as far as a transcript can say. The base is
+// measured, not guessed: it is the prompt of the first turn, before anything had
+// been said. The rest is the conversation, and the share of it that came back
+// from tools is an estimate at four characters to the token — good enough to
+// answer whether the window is full of talk or full of output nobody read.
+function makeupRows(s) {
+  const grown = Math.max(0, s.ctx - s.base);
+  const fromTools = Math.min(grown, Math.round(s.toolChars / 4));
+  const bar = (v) => {
+    const w = Math.max(6, Math.min(24, W() - 46));
+    const on = s.ctx ? Math.round(v / s.ctx * w) : 0;
+    return dim('█'.repeat(on) + '░'.repeat(Math.max(0, w - on)));
+  };
+  const line = (label, v, note) => ({
+    text: '  ' + dim(cell(label, 11)) + cell(num(v), 6, true) + '  ' + bar(v) + dim('  ' + note),
+  });
+  return [
+    line('база', s.base, 'системний промт, інструменти, пам\'ять'),
+    line('розмова', grown, 'за ' + plural(s.rounds.length, 'запит', 'запити', 'запитів')),
+    line('з неї', fromTools, 'відповіді інструментів, приблизно'),
+  ];
+}
+
+// Rounds, by what they cost: everything the model wrote plus everything it had
+// to write into the cache. One line of what was asked, because a round is
+// remembered by the ask and not by the tools it happened to use.
+function askRows(s) {
+  const rows = s.rounds.filter((r) => r.turns).map((r) => ({ ...r, cost: r.out + r.wrote }));
+  const top = [...rows].sort((a, b) => b.cost - a.cost).slice(0, ASK_N);
+  const room = Math.max(12, W() - 34);
+  const mid = rows.length ? [...rows].sort((a, b) => a.cost - b.cost)[rows.length >> 1] : null;
+  return [
+    ...top.map((r) => ({
+      text: '  ' + dim(hhmm(new Date(r.at).toISOString())) + cell(num(r.cost), 7, true)
+        + dim(cell(r.turns + ' х', 5, true)) + dim(cell(r.to && r.at ? span(r.to - r.at) : '', 8, true))
+        + '  ' + clip(r.text, room),
+    })),
+    ...(mid ? [{ text: dim('  медіана запиту ' + num(mid.cost) + ' токенів  ·  ' + num(rows.reduce((a, r) => a + r.cost, 0) / Math.max(1, rows.length)) + ' у середньому') }] : []),
+  ];
 }
 
 function renderStats() {
@@ -1922,8 +2019,9 @@ function renderStats() {
         { key: 'КОНТЕКСТ', label: 'КОНТЕКСТ', items: ctxRows(s, h, n), count: '' },
         { key: 'ПЕРЕБІГ', label: 'ПЕРЕБІГ', items: bandRows(s, n), count: '' },
       ] : []),
+      ...(s.base ? [{ key: 'СКЛАД', label: 'СКЛАД КОНТЕКСТУ', items: makeupRows(s), count: '' }] : []),
+      ...(s.rounds.length ? [{ key: 'ЗАПИТИ', label: 'НАЙДОРОЖЧІ ЗАПИТИ', items: askRows(s), count: '' }] : []),
       { key: 'ІНСТРУМЕНТИ', label: 'ІНСТРУМЕНТИ', items: toolRows(s), count: '' },
-      ...(s.big.length ? [{ key: 'НАЙДОРОЖЧЕ', label: 'НАЙДОРОЖЧЕ', items: bigRows(s), count: '' }] : []),
     ], H() - 2);
   }
   paint(out, dim(' a — назад · Tab — список · q — вихід'));

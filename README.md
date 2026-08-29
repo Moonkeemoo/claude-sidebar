@@ -61,6 +61,7 @@ The mark in front of a session is the useful part of that first block:
 |---|---|
 | `●` green | moving right now, with the tool it is running beside it |
 | `◐` yellow | the turn ended and nothing will happen until you say something |
+| `◉` cyan | an agent is still out — the session is working, not waiting on you |
 | `◑` | it has a tool call open but has not written for a while |
 | `○` | cold, nothing in the last three hours |
 
@@ -146,10 +147,21 @@ line, which is exactly when you want to know.
   Edit                    98      4k    1 хв      2
   WebSearch                2      1k    14 с      ·
 
-── НАЙДОРОЖЧЕ ────────────────────────────
-  Bash            2k   3 с  cat CLAUDE.md
-  Read            2k        src/app/state.ts
-  Bash            1k   1 с  sed -n 330,470p sidebar.js
+── СКЛАД КОНТЕКСТУ ──────────────────────
+  база          65k  ███░░░░░░░░░  системний промт, інструменти, пам'ять
+  розмова      412k  ██████████░░  за 19 запитів
+  з неї         49k  ██░░░░░░░░░░  відповіді інструментів, приблизно
+
+── НАЙДОРОЖЧІ ЗАПИТИ ──────────────────
+  10:40   170k 63 х   14 хв  думаю що ще корисного додати
+  09:28   119k 54 х    6 хв  ось тут відображаються всі файли — мене ціка…
+  09:50   115k 39 х    6 хв  доречі додаткова задача — по репозиторію…
+  медіана запиту 92k токенів  ·  87k у середньому
+
+── ІНСТРУМЕНТИ ─────────────────────────────
+                     виклики   вихід     час   збої
+  Bash                   194     39k   13 хв      8
+  Edit                   104      5k    1 хв      2
 ```
 
 Four numbers say most of it. **Контекст** is the prompt of the newest turn — everything the model was
@@ -175,9 +187,18 @@ the same span underneath as two bands — what was generated, and where results 
 cut into as many slices as the pane is wide, so an hour of nothing looks like an hour of nothing. A
 bright patch in the lower band is a retry loop, sitting directly under the minutes that produced it.
 
-НАЙДОРОЖЧЕ is the five biggest single results with the call that asked for them. The tool table
-says which tool leaks; this says which call did, and it is usually one read of something nobody meant
-to read whole.
+СКЛАД КОНТЕКСТУ is as far as a transcript can answer what the window is made of. The base is
+measured rather than guessed: it is the prompt of the very first turn, before anything had been
+said, so it is the system prompt, every tool definition and the memory files, together. Everything
+above it is the conversation, and the share of that which came back from tools is an estimate at
+four characters to the token — enough to tell a window full of talk from a window full of output
+nobody read.
+
+НАЙДОРОЖЧІ ЗАПИТИ ranks rounds rather than tools: one thing asked and everything the model did
+about it, by what it wrote plus what it had to write into the cache. The columns are that cost, how
+many turns it took and how long it ran, and the line is what was asked — which is how a round is
+remembered, rather than by which tools it happened to use. The median and the mean under the table
+say whether one round was expensive or the whole session runs that way.
 
 Reading all of it costs a pass over the whole transcript, which for a hundred-megabyte file is about
 six hundred milliseconds — taken eight megabytes at a time so the pane keeps painting, and only while
