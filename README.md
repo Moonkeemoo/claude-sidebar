@@ -23,7 +23,7 @@ is following:
  ◑ 1 год  Пошук інструменту    Edit sidebar.js
 
 ── ЗАЛІЗО лінії ─────────────────────────────────────
-  CPU 31%  ·  RAM 56% 17.9G/31.9G  ·  VRAM 24% 3.8G
+  CPU 31% · RAM 56% 17.9G/31.9G · VRAM 24% · NET ↓3K ↑4K · диск 254G
   100┤
      │              ╭─╮
      │             ╭╯  ╰╮
@@ -37,6 +37,10 @@ is following:
   svchost        ×93    1.6G    2%
   claude         ×3     1.4G    2%
   решта          ×357  10.0G    6%
+
+── АГЕНТИ 2 ───────────────────────────────────────
+  ▸ Review balance config              3 хв
+  ✓ Pull GameFlow from Coda            6 хв
 
 ── МЕДІА 1 ──────────────────────────────────────────
   1.png  121K  image-cache/9de93e09…/1.png
@@ -101,7 +105,18 @@ and processor share, the `×` is how many processes the group holds, and реш�
 cut so the numbers add up to the machine. `claude` marks the ones inside Claude Code's own tree — a
 dev server it started, a headless browser a test left behind — with a count when only some of the
 group is: `claude ×8` of twenty-four browser processes is a test suite, not your tabs. A node process
-is named by the script it runs, because `node.exe` names nothing. Windows only.
+is named by the script it runs, because `node.exe` names nothing.
+
+NET is the fourth line on the chart and the odd one out: traffic has no ceiling to be a percentage of,
+so the line is scaled to the busiest moment on show and the legend carries the actual rate. It is
+read from the same poll as the processes, five seconds apart, so it steps where the other three flow.
+The disk figure beside it is free space on the system drive, which moves slowly enough not to need a
+line of its own.
+
+АГЕНТИ appears when a session has handed work to subagents: what it dispatched, whether the answer
+has come back, and how long it has been out. `▸` is still running, `✓` came back and the time beside
+it is how long it took. A session waiting on three agents shows nothing about them in its own last
+line, which is exactly when you want to know.
 
 **The session list** opens on `Tab`. Every Claude session on the machine, newest first, titled by what
 the session was actually about. Move the highlight and the blocks below it switch to that session's

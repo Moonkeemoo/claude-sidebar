@@ -104,7 +104,7 @@ const NOISE = /^(\/dev\/null|&\d|-|\d)$/;
 // and the redirect regex below happily matches those too
 const BAD = /[{}()%*?<>|"]|:$/;
 
-function newState() { return { files: new Map(), links: new Map(), todos: [], cwd: null }; }
+function newState() { return { files: new Map(), links: new Map(), todos: [], agents: new Map(), cwd: null }; }
 
 function noteFile(st, p, t) {
   if (!p || NOISE.test(p)) return;
@@ -142,6 +142,14 @@ function ingest(st, line) {
       if (inp.file_path) noteFile(st, inp.file_path, t);
       if (b.name === 'Bash' && inp.command) pathsFromBash(st, String(inp.command), t);
       if (b.name === 'TodoWrite' && Array.isArray(inp.todos)) st.todos = inp.todos;
+      // What the session handed off and whether it has come back. A dispatched
+      // agent is the one piece of work a session queues that it cannot report
+      // on itself — it is busy waiting for it.
+      if (b.name === 'Agent' && b.id) {
+        st.agents.set(b.id, { what: inp.description || inp.subagent_type || 'агент', at: t, done: null });
+      }
+    } else if (b.type === 'tool_result' && st.agents.has(b.tool_use_id)) {
+      st.agents.get(b.tool_use_id).done = t;
     } else if (b.type === 'text' && b.text) {
       const re = /https?:\/\/[^\s)>\]"'`]+/g;
       let m;
@@ -206,7 +214,7 @@ function startOffset(f) {
 function resetLive(f) {
   file = f; offset = startOffset(f); carry = '';
   live.partial = offset > 0;
-  live.files.clear(); live.links.clear(); live.todos = []; live.cwd = null;
+  live.files.clear(); live.links.clear(); live.agents.clear(); live.todos = []; live.cwd = null;
 }
 
 // ---- session list ----
@@ -604,7 +612,7 @@ function orphanRows(rows, now, minAge = ORPHAN_AGE) {
 // needs nvidia-smi, and its absence is a row that never appears.
 const GPU_TTL = 3000;
 const HIST = 600;
-const load = { cpu: [], ram: [], vram: [], gpu: null };
+const load = { cpu: [], ram: [], vram: [], net: [], gpu: null, rate: null, disk: null };
 let cpuAt = cpuTicks();
 
 function cpuTicks() {
@@ -642,6 +650,12 @@ function sampleLoad() {
   keep(load.ram, load.used / os.totalmem());
   const g = slow('gpu', GPU_TTL, gpuMem);
   if (g) { load.gpu = g; keep(load.vram, g.used / g.total); }
+  // The same poll that finds the heavy processes carries the counters, so the
+  // rate is only as new as that poll — the line steps rather than flows.
+  const d = slow('procs', PROC_TTL, processes);
+  if (d && d.disk) load.disk = d.disk;
+  if (d && d.net) load.rate = d.net;
+  if (load.rate) keep(load.net, load.rate.rx + load.rate.tx);
 }
 
 // ---- what is holding the machine ----
@@ -663,7 +677,14 @@ const PROC_Q = [
   '    if ($_.CommandLine) { $c = $_.CommandLine.Substring(0, [Math]::Min(200, $_.CommandLine.Length)) } };',
   '  [pscustomobject]@{ id = $_.ProcessId; pp = $_.ParentProcessId; n = $_.Name; ws = $_.WorkingSetSize;',
   '    t = ($_.KernelModeTime + $_.UserModeTime); c = $c } };',
-  '@($r) | ConvertTo-Json -Compress -Depth 3',
+  // Raw counters, not the formatted per-second ones: the pane keeps its own
+  // clock, and two readings of a total are all a rate needs.
+  "$n = Get-CimInstance Win32_PerfRawData_Tcpip_NetworkInterface | Where-Object { $_.Name -notmatch 'Loopback|isatap|Pseudo' };",
+  '$d = Get-CimInstance Win32_LogicalDisk | Where-Object { $_.DeviceID -eq $env:SystemDrive };',
+  '[pscustomobject]@{ p = @($r);',
+  '  rx = ($n | Measure-Object BytesReceivedPersec -Sum).Sum;',
+  '  tx = ($n | Measure-Object BytesSentPersec -Sum).Sum;',
+  '  free = $d.FreeSpace; size = $d.Size } | ConvertTo-Json -Compress -Depth 3',
 ].join(' ');
 
 // Everywhere that is not Windows, ps says the same things in fewer characters.
@@ -702,7 +723,7 @@ async function unixProcesses() {
       if (m && byId.has(+m[1])) byId.get(+m[1]).c = m[2];
     }
   }
-  return list;
+  return { list, net: netBytes((await capture('netstat', ['-ib'])).out), disk: dfSpace((await capture('df', ['-k', '/'])).out) };
 }
 
 // What a Mac calls memory in use: what applications hold, what is wired down and
@@ -751,15 +772,38 @@ function claudeOwned(id, by) {
   return false;
 }
 
+// netstat lists an interface once per address it holds; the <Link#> line is the
+// one carrying the counters, and loopback traffic is not traffic.
+function netBytes(out) {
+  let rx = 0, tx = 0;
+  for (const l of out.split('\n')) {
+    const f = l.trim().split(/\s+/);
+    if (f.length < 10 || !/^<Link#/.test(f[2]) || /^lo\d/.test(f[0])) continue;
+    rx += +f[6] || 0;
+    tx += +f[9] || 0;
+  }
+  return rx || tx ? { rx, tx } : null;
+}
+
+// df -k, so the numbers are kilobytes whatever the shell's own idea of a block.
+function dfSpace(out) {
+  const l = out.split('\n')[1] || '';
+  const f = l.trim().split(/\s+/);
+  return f.length > 3 && +f[1] ? { size: +f[1] * 1024, free: +f[3] * 1024 } : null;
+}
+
 async function winProcesses() {
   const { out } = await capture('powershell', ['-NoProfile', '-NonInteractive', '-Command', PROC_Q]);
-  let list; try { list = JSON.parse(out); } catch { return null; }
-  return Array.isArray(list) ? list : null;
+  let d; try { d = JSON.parse(out); } catch { return null; }
+  return d && Array.isArray(d.p)
+    ? { list: d.p, net: { rx: +d.rx || 0, tx: +d.tx || 0 }, disk: d.size ? { free: +d.free, size: +d.size } : null }
+    : null;
 }
 
 async function processes() {
-  const list = process.platform === 'win32' ? await winProcesses() : await unixProcesses();
-  if (!list || !list.length) return null;
+  const got = process.platform === 'win32' ? await winProcesses() : await unixProcesses();
+  if (!got || !got.list.length) return null;
+  const list = got.list;
   const by = new Map(list.map((p) => [p.id, p]));
   const now = Date.now();
   const span = now - procAt.at;
@@ -789,7 +833,24 @@ async function processes() {
   return {
     top: ranked.slice(0, PROC_N),
     rest: ranked.slice(PROC_N).reduce((a, g) => ({ n: a.n + g.n, ws: a.ws + g.ws, cpu: a.cpu + g.cpu }), { n: 0, ws: 0, cpu: 0 }),
+    net: netRate(got.net, now),
+    disk: got.disk,
   };
+}
+
+// Interfaces count bytes since boot, so a rate is two readings and the time
+// between them. A counter that went backwards is an adapter that was reset, and
+// the answer to that is to wait for the next pair rather than to report a number
+// the size of the machine's uptime.
+let netAt = null;
+
+function netRate(now2, now) {
+  const was = netAt;
+  if (!now2) return null;
+  netAt = { at: now, rx: now2.rx, tx: now2.tx };
+  const span = was ? (now - was.at) / 1000 : 0;
+  if (!was || span <= 0 || now2.rx < was.rx || now2.tx < was.tx) return null;
+  return { rx: (now2.rx - was.rx) / span, tx: (now2.tx - was.tx) / span };
 }
 
 // Columns are padded before they are coloured: an escape sequence has no width,
@@ -1291,7 +1352,18 @@ const SERIES = [
   { key: 'cpu', label: 'CPU', colour: '33' },
   { key: 'ram', label: 'RAM', colour: '36' },
   { key: 'vram', label: 'VRAM', colour: '32' },
+  // Traffic has no ceiling to be a percentage of, so its line is scaled to the
+  // busiest moment on show. It is the shape that carries — a download starting,
+  // a build pulling packages — and the legend carries the actual rate.
+  { key: 'net', label: 'NET', colour: '35', auto: true },
 ];
+
+function seriesData(s, n) {
+  const raw = load[s.key].slice(-n);
+  if (!s.auto) return raw;
+  const peak = Math.max(...raw, 1);
+  return raw.map((v) => v / peak);
+}
 
 // Lines, not marks: a run along a row where the reading holds, a corner where it
 // turns, a stem down the rows it jumped. One column is one sample, so the chart
@@ -1304,7 +1376,7 @@ function chart(h, n) {
     if (r >= 0 && r < h && c >= 0 && c < n && !cells[r][c]) cells[r][c] = { ch, colour };
   };
   for (const s of SERIES) {
-    const data = load[s.key].slice(-n);
+    const data = seriesData(s, n);
     const from = n - data.length;             // a short history starts mid-grid
     const at = (v) => Math.max(0, Math.min(h - 1, Math.round((1 - v) * (h - 1))));
     data.forEach((v, i) => {
@@ -1342,7 +1414,7 @@ function braille(h, n) {
     row[dx >> 1] = cur;
   };
   for (const s of SERIES) {
-    const data = load[s.key].slice(-n * 2);
+    const data = seriesData(s, n * 2);
     const from = n * 2 - data.length;
     let prev = null;
     data.forEach((v, i) => {
@@ -1378,7 +1450,7 @@ function heatRGB(v) {
 function heat(n, dense) {
   n -= 1;                                     // the label is a column wider than the chart's axis
   return SERIES.filter((s) => load[s.key].length).map((s) => {
-    const data = load[s.key].slice(dense ? -n * 2 : -n);
+    const data = seriesData(s, dense ? n * 2 : n);
     const cells = [];
     if (dense) {
       for (let i = 0; i < data.length; i += 2) {
@@ -1405,8 +1477,13 @@ function loadRows() {
   const legend = SERIES.filter((s) => load[s.key].length).map((s) => {
     const v = load[s.key][load[s.key].length - 1];
     const tail = note[s.key] ? note[s.key]() : '';
-    return sgr(s.colour, s.label) + ' ' + Math.round(v * 100) + '%' + (tail ? dim(' ' + tail) : '');
+    // Everything but traffic is a share of something; traffic is a rate.
+    const read = s.key === 'net'
+      ? (load.rate ? '↓' + weigh(load.rate.rx) + ' ↑' + weigh(load.rate.tx) : '—')
+      : Math.round(v * 100) + '%';
+    return sgr(s.colour, s.label) + ' ' + read + (tail ? dim(' ' + tail) : '');
   });
+  if (load.disk) legend.push(dim('диск ' + weigh(load.disk.free) + ' вільно'));
   // Under about two dozen rows a tall chart would be handed two of them and
   // paint its empty ceiling, so the numbers go on alone.
   const row = { chart: true, text: '  ' + legend.join(dim('  ·  ')) };
@@ -1499,9 +1576,30 @@ function deployItems(info) {
 }
 
 // The blocks below the head of a view, shared by both of them.
+// Work the session handed off, newest first, with how long it has been gone. An
+// agent still out is the one thing a session is waiting on that its own last
+// line does not mention.
+function agentRows(st) {
+  const room = Math.max(10, W() - 13);
+  return [...st.agents.values()]
+    .sort((a, b) => (b.at > a.at ? 1 : -1))
+    .slice(0, 5)
+    .map((a) => {
+      const from = Date.parse(a.at) || 0;
+      const span = Math.max(0, (a.done ? Date.parse(a.done) : Date.now()) - from);
+      const what = clip(a.what, room);
+      return {
+        text: '  ' + (a.done ? sgr('32', '✓') + ' ' + dim(cell(what, room)) : sgr('1;33', '▸') + ' ' + cell(what, room))
+          + dim(cell(from ? ago(span) : '', 7, true)),
+      };
+    });
+}
+
 function bodyBlocks(st, base) {
   const b = bodyItems(st, base);
   const out = [];
+  const agents = agentRows(st);
+  if (agents.length) out.push({ key: 'АГЕНТИ', label: 'АГЕНТИ', items: agents });
   if (b.media.length) out.push({ key: 'МЕДІА', label: 'МЕДІА', items: b.media });
   out.push({ key: 'ФАЙЛИ', label: 'ФАЙЛИ', items: b.files, count: b.files.length + (st.partial ? '+' : '') });
   out.push({ key: 'ЛІНКИ', label: 'ЛІНКИ', items: b.links });

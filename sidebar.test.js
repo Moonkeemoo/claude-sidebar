@@ -209,6 +209,24 @@ for (const i of rules.slice(1)) {
   assert.ok(watch.blocks[i - 1], 'the blank row on row ' + i + ' belongs to no block');
 }
 
+// ---- a dispatched agent is closed by its own result, not by the next one ----
+// The result arrives in a later message carrying only the id of the call it
+// answers, so matching it on anything else marks the wrong agent finished and
+// leaves one that is still running looking done.
+const ing = eval('(function(){' + src.match(/const TEMP = [\s\S]*?\nfunction ingest[\s\S]*?\n\}/)[0] + '\nreturn { newState, ingest } })()');
+const agent = ing.newState();
+for (const line of [
+  { content: [{ type: 'tool_use', id: 'a1', name: 'Agent', input: { description: 'first' } }] },
+  { content: [{ type: 'tool_use', id: 'a2', name: 'Agent', input: { subagent_type: 'explore' } }] },
+  { content: [{ type: 'tool_result', tool_use_id: 'a1', content: 'done' }] },
+  { content: [{ type: 'tool_result', tool_use_id: 'unrelated', content: 'x' }] },
+]) ing.ingest(agent, JSON.stringify({ type: 'assistant', timestamp: at, message: line }));
+
+assert.strictEqual(agent.agents.size, 2, 'both dispatches must be held: ' + JSON.stringify([...agent.agents]));
+assert.ok(agent.agents.get('a1').done, 'the agent whose result came back is not marked finished');
+assert.strictEqual(agent.agents.get('a2').done, null, 'the one still out was closed by someone else result');
+assert.strictEqual(agent.agents.get('a2').what, 'explore', 'a dispatch with no description falls back to its type');
+
 // ---- the Mac's own tools, parsed the way they actually print ----
 // Neither of these runs on the machine this test does, and both fail silently:
 // slow() swallows a throw, so a parser that matches nothing looks exactly like a
@@ -251,7 +269,7 @@ assert.strictEqual(unix.vmUsed([
 // axis is cut off first — it is drawn on every row and would answer for all of
 // them.
 const plot = (cpu, h, n) => eval('(function(){ const dim = (s) => s, sgr = (c, s) => s;'
-  + ' const load = { cpu: ' + JSON.stringify(cpu) + ', ram: [], vram: [] };'
+  + ' const load = { cpu: ' + JSON.stringify(cpu) + ', ram: [], vram: [], net: [] };'
   + src.match(/const SERIES = [\s\S]*?\nfunction chart[\s\S]*?\n\}/)[0]
   + '\nreturn chart })()')(h, n).map((r) => /\S/.test(r.text.slice(6)));
 
