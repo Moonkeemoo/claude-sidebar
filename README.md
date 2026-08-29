@@ -32,9 +32,11 @@ is following:
      │        ╭──────────────────────
     0┤────────╯
 
-  vite.js            14%   1.2G  claude
-  chrome              5%   1.1G
-  MsMpEng             2%   481M  services
+                       RAM   CPU
+  chrome         ×24    3.8G    5%  claude ×8
+  svchost        ×93    1.6G    2%
+  claude         ×3     1.4G    2%
+  решта          ×357  10.0G    6%
 
 ── МЕДІА 1 ──────────────────────────────────────────
   1.png  121K  image-cache/9de93e09…/1.png
@@ -92,11 +94,14 @@ through to red pinned — three rows instead of nine, and no series can hide und
 paints two samples into every cell, upper half over lower, so the same three rows carry twice the
 history. The choice lives as long as the pane does; a restart comes back on lines.
 
-Under the chart are the four heaviest processes on the machine, by processor time and then by memory,
-with what each is holding and who started it. `claude` marks a process somewhere in Claude Code's own
-tree — a vite dev server it launched, a headless browser a test left behind — which is the difference
-between a machine that is busy because of the session beside you and one that is busy in spite of it.
-A node process is named by the script it is running, because `node.exe` names nothing. Windows only.
+Under the chart is what is holding the machine, grouped by program rather than listed by process: a
+browser is thirty-odd processes and not one of them is ever heavy on its own, which is how a pane can
+report four hundred megabytes while the machine is using seventeen gigabytes. The columns are memory
+and processor share, the `×` is how many processes the group holds, and решта sums everything below the
+cut so the numbers add up to the machine. `claude` marks the ones inside Claude Code's own tree — a
+dev server it started, a headless browser a test left behind — with a count when only some of the
+group is: `claude ×8` of twenty-four browser processes is a test suite, not your tabs. A node process
+is named by the script it runs, because `node.exe` names nothing. Windows only.
 
 **The session list** opens on `Tab`. Every Claude session on the machine, newest first, titled by what
 the session was actually about. Move the highlight and the blocks below it switch to that session's
@@ -112,13 +117,13 @@ view shows it for the session it is following, the list for the one under the hi
   github.com/Moonkeemoo/reef            1.2G
     з них node_modules  840M
 
-  пн ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
-  вт ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
-  ср ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
-  чт ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
-  пт ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
-  сб ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
-  нд ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
+  пн ██████████████████████████
+  вт ██████████████████████████
+  ср ██████████████████████████
+  чт ██████████████████████████
+  пт ██████████████████████████
+  сб ██████████████████████████
+  нд ██████████████████████████
 
   feature/waves  ● змінено 3  ↑2 не запушено
     від master  ↓12 відстала  ↑4 своїх

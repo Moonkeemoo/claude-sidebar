@@ -648,17 +648,17 @@ function sampleLoad() {
 const PROC_TTL = 5000;
 const PROC_N = 4;                            // rows shown under the chart
 const PROC_SKIP = /^(System|System Idle Process|Memory Compression|Registry)$/i;
+// Every process, not the heaviest dozen: a browser is thirty-odd of them and no
+// single one is ever heavy. The command line is fetched only for the runtimes
+// whose name says nothing about what they are running.
 const PROC_Q = [
-  '$a = Get-CimInstance Win32_Process;',
-  '$t = @($a | Sort-Object WorkingSetSize -Descending | Select-Object -First 12)',
-  ' + @($a | Sort-Object {$_.KernelModeTime + $_.UserModeTime} -Descending | Select-Object -First 12);',
-  '$top = $t | Sort-Object ProcessId -Unique | ForEach-Object {',
+  '$r = Get-CimInstance Win32_Process | ForEach-Object {',
   '  $c = [string]::Empty;',
-  '  if ($_.CommandLine) { $c = $_.CommandLine.Substring(0, [Math]::Min(160, $_.CommandLine.Length)) };',
+  "  if ($_.Name -match '^(node|claude|python|pythonw|bun|deno|java)') {",
+  '    if ($_.CommandLine) { $c = $_.CommandLine.Substring(0, [Math]::Min(200, $_.CommandLine.Length)) } };',
   '  [pscustomobject]@{ id = $_.ProcessId; pp = $_.ParentProcessId; n = $_.Name; ws = $_.WorkingSetSize;',
   '    t = ($_.KernelModeTime + $_.UserModeTime); c = $c } };',
-  '$all = $a | ForEach-Object { [pscustomobject]@{ id = $_.ProcessId; pp = $_.ParentProcessId; n = $_.Name } };',
-  '[pscustomobject]@{ top = @($top); all = @($all) } | ConvertTo-Json -Compress -Depth 4',
+  '@($r) | ConvertTo-Json -Compress -Depth 3',
 ].join(' ');
 
 let procAt = { at: 0, cpu: new Map() };
@@ -685,43 +685,59 @@ function claudeOwned(id, by) {
 }
 
 async function processes() {
-  if (process.platform !== 'win32') return [];
+  if (process.platform !== 'win32') return null;
   const { out } = await capture('powershell', ['-NoProfile', '-NonInteractive', '-Command', PROC_Q]);
-  let d; try { d = JSON.parse(out); } catch { return []; }
-  const by = new Map((d.all || []).map((p) => [p.id, p]));
+  let list; try { list = JSON.parse(out); } catch { return null; }
+  if (!Array.isArray(list)) return null;
+  const by = new Map(list.map((p) => [p.id, p]));
   const now = Date.now();
   const span = now - procAt.at;
   const cores = os.cpus().length;
   const cpu = new Map();
-  const rows = [];
-  for (const p of d.top || []) {
+  const groups = new Map();
+  for (const p of list) {
     cpu.set(p.id, p.t);
     if (p.id <= 4 || PROC_SKIP.test(p.n)) continue;
     const was = procAt.cpu.get(p.id);
     // CIM counts processor time in 100ns ticks, over every core there is.
     const pct = procAt.at && was != null && span > 0 ? Math.max(0, (p.t - was) / 1e4 / (span * cores) * 100) : 0;
-    const parent = by.get(p.pp);
-    rows.push({
-      name: procName(p),
-      cpu: pct,
-      ws: p.ws || 0,
-      claude: claudeOwned(p.id, by),
-      owner: parent ? String(parent.n).replace(/\.exe$/i, '') : '',
-    });
+    const name = procName(p);
+    const g = groups.get(name) || { name, n: 0, ws: 0, cpu: 0, claude: 0 };
+    g.n++;
+    g.ws += p.ws || 0;
+    g.cpu += pct;
+    // Counted, not flagged: one headless browser a test forgot does not make
+    // every tab you have open Claude's doing.
+    if (claudeOwned(p.id, by)) g.claude++;
+    groups.set(name, g);
   }
   procAt = { at: now, cpu };
-  return rows.sort((a, b) => (b.cpu - a.cpu) || (b.ws - a.ws)).slice(0, PROC_N);
+  // Ranked by whichever resource it is heavy in, because the process eating the
+  // processor and the one eating the memory are rarely the same one.
+  const ranked = [...groups.values()].sort((a, b) => (b.ws / os.totalmem() + b.cpu / 100) - (a.ws / os.totalmem() + a.cpu / 100));
+  return {
+    top: ranked.slice(0, PROC_N),
+    rest: ranked.slice(PROC_N).reduce((a, g) => ({ n: a.n + g.n, ws: a.ws + g.ws, cpu: a.cpu + g.cpu }), { n: 0, ws: 0, cpu: 0 }),
+  };
 }
 
+// Columns are padded before they are coloured: an escape sequence has no width,
+// and padEnd counts it anyway.
+const cell = (s, w, right) => (right ? String(s).padStart(w) : String(s).padEnd(w));
+
 function procRows() {
-  return (slow('procs', PROC_TTL, processes) || []).map((p) => ({
-    text: '  ' + clip(p.name, 17).padEnd(16) + (Math.round(p.cpu) + '%').padStart(5) + '  '
-      // Who started it, when that is worth a word: Claude's own tree, or a
-      // parent that is not simply another copy of the same program.
-      + weigh(p.ws).padStart(5) + '  '
-      + (p.claude ? (p.name === 'claude' ? '' : sgr('36', 'claude'))
-        : p.owner && p.owner !== p.name ? dim(p.owner) : ''),
-  }));
+  const d = slow('procs', PROC_TTL, processes);
+  if (!d || !d.top.length) return [];
+  const row = (g, tag) => ({
+    text: '  ' + cell(clip(g.name, 16), 15) + dim(cell(g.n > 1 ? '×' + g.n : '', 5))
+      + cell(weigh(g.ws), 6, true) + cell(Math.round(g.cpu) + '%', 6, true) + '  ' + tag,
+  });
+  return [
+    { text: dim('  ' + cell('', 20) + cell('RAM', 6, true) + cell('CPU', 6, true)) },
+    ...d.top.map((g) => row(g, !g.claude || g.name === 'claude' ? ''
+      : sgr('36', 'claude' + (g.claude < g.n ? ' ×' + g.claude : '')))),
+    ...(d.rest.n ? [{ text: dim(strip(row({ ...d.rest, name: 'решта' }, '').text)) }] : []),
+  ];
 }
 
 // Open a link or a file with whatever the OS has registered for it. On Windows
@@ -1327,7 +1343,7 @@ function loadRows() {
   const tall = chartMode < 2;
   if (tall && H() < 24) return [row, ...heavy];
   const body = chartMode === 0 ? chart(h, n) : chartMode === 1 ? braille(h, n) : heat(n, chartMode === 3);
-  return [row, ...body, ...(heavy.length ? [{ text: '' }, ...heavy] : [])];
+  return [row, ...body, ...heavy];
 }
 
 // Where the selected session's work lives and what it has been deployed to.
@@ -1368,7 +1384,7 @@ function commitMatrix(days) {
   const peak = Math.max(1, ...days);
   return grid.map((row, i) => ({
     text: '  ' + dim(WEEKDAYS[i]) + ' '
-      + row.map((n) => (n == null ? ' ' : sgr('38;5;' + GREEN[n ? Math.min(4, Math.ceil(n / peak * 4)) : 0], '▇'))).join(''),
+      + row.map((n) => (n == null ? ' ' : sgr('38;5;' + GREEN[n ? Math.min(4, Math.ceil(n / peak * 4)) : 0], '█'))).join(''),
   }));
 }
 
