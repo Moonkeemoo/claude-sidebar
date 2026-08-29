@@ -122,17 +122,34 @@ line, which is exactly when you want to know.
 
 ```
 ── ВИТРАТИ · Сайдбар ──────────────────────────
-  контекст   401k  токенів у промті останнього ходу
-  кеш        99% зчитано  756k записано в кеш
-  вихід      442k  думання 238k  ·  ходів 431
-  час        1 год 52 хв  транскрипт 4M  ·  opus-5
+  контекст   437k  токенів у промті останнього ходу
+  кеш        99% зчитано  809k записано в кеш
+  вихід      484k  думання 253k  ·  ходів 479
+  час        2 год  транскрипт 5M  ·  opus-5
+  з них      18 хв в інструментах  ·  1 год 42 хв модель і очікування
   ⏱ Bash висить 6 хв
+
+── КОНТЕКСТ ────────────────────────────────
+  437k┤                              ╭──────
+      │                ╭────────────╯
+      │   ╭─────────╯
+     0┤───╯
+
+── ПЕРЕБІГ ─────────────────────────────────
+  вихід ███▓▓▒░░▒▓██▓▒░░░▒▓███▓▒░
+  збої  ░░░░█░░░░░░░░░██░░░░░░░░░
+  09:00                        11:00
 
 ── ІНСТРУМЕНТИ ─────────────────────────────
                      виклики   вихід     час   збої
-  Bash                   163     34k   11 хв      6
-  Edit                    88      4k    1 хв      2
+  Bash                   179     36k   12 хв      7
+  Edit                    98      4k    1 хв      2
   WebSearch                2      1k    14 с      ·
+
+── НАЙДОРОЖЧЕ ────────────────────────────
+  Bash            2k   3 с  cat CLAUDE.md
+  Read            2k        src/app/state.ts
+  Bash            1k   1 с  sed -n 330,470p sidebar.js
 ```
 
 Four numbers say most of it. **Контекст** is the prompt of the newest turn — everything the model was
@@ -150,9 +167,21 @@ near enough to rank on. **Час** is wall clock spent inside that tool, which i
 actually go. **Збої** counts results that came back as errors; a tool with a high count there is a
 retry loop nobody noticed.
 
-Reading it costs a pass over the whole transcript, which for a hundred-megabyte file is about six
-hundred milliseconds — taken eight megabytes at a time so the pane keeps painting, and only while this
-screen is open.
+The bands are colour rather than shading — dark where the session was quiet, bright where it burned.
+
+КОНТЕКСТ is that first number drawn across the session, against its own peak. A staircase climbing
+to the right is a session carrying everything it has ever read; a cliff is a compaction. ПЕРЕБІГ puts
+the same span underneath as two bands — what was generated, and where results came back as errors —
+cut into as many slices as the pane is wide, so an hour of nothing looks like an hour of nothing. A
+bright patch in the lower band is a retry loop, sitting directly under the minutes that produced it.
+
+НАЙДОРОЖЧЕ is the five biggest single results with the call that asked for them. The tool table
+says which tool leaks; this says which call did, and it is usually one read of something nobody meant
+to read whole.
+
+Reading all of it costs a pass over the whole transcript, which for a hundred-megabyte file is about
+six hundred milliseconds — taken eight megabytes at a time so the pane keeps painting, and only while
+this screen is open.
 
 **The session list** opens on `Tab`. Every Claude session on the machine, newest first, titled by what
 the session was actually about. Move the highlight and the blocks below it switch to that session's

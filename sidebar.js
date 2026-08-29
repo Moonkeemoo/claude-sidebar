@@ -1130,8 +1130,24 @@ function fireURI(uri) {
 const STAT_TTL = 30 * 1000;
 const STAT_CHUNK = 8 * 1024 * 1024;
 
+const BIG_N = 5;                   // single results kept as the expensive ones
+
 function newStats() {
-  return { turns: 0, out: 0, think: 0, read: 0, wrote: 0, ctx: 0, model: '', bytes: 0, from: 0, to: 0, tools: new Map(), open: new Map() };
+  return {
+    turns: 0, out: 0, think: 0, read: 0, wrote: 0, ctx: 0, model: '', bytes: 0, from: 0, to: 0,
+    tools: new Map(), open: new Map(),
+    // Per turn, so the screen can draw the session rather than sum it: where the
+    // context grew and where it was cut back, and when the work actually
+    // happened as against when the session was open.
+    marks: [], big: [],
+  };
+}
+
+// What a call was about, in the few words its input carries. It is kept for
+// every open call because the result that makes it expensive arrives later.
+function briefOf(name, inp) {
+  const v = inp.command || inp.description || inp.file_path || inp.pattern || inp.query || inp.url || inp.prompt || '';
+  return String(v).replace(/\s+/g, ' ').trim().slice(0, 120);
 }
 
 function toolOf(s, name) {
@@ -1167,22 +1183,37 @@ function statLine(s, line) {
     // what came from cache, and what was written into it.
     s.ctx = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
     if (m.model) s.model = String(m.model).replace(/^claude-/, '');
+    s.marks.push({ t, ctx: s.ctx, out: u.output_tokens || 0, err: 0 });
   }
   if (!Array.isArray(m.content)) return;
   for (const b of m.content) {
     if (!b || typeof b !== 'object') continue;
     if (b.type === 'tool_use') {
       toolOf(s, b.name || '?').calls++;
-      if (b.id) s.open.set(b.id, { name: b.name || '?', at: t });
+      if (b.id) s.open.set(b.id, { name: b.name || '?', at: t, brief: briefOf(b.name || '', b.input || {}) });
     } else if (b.type === 'tool_result') {
       const was = s.open.get(b.tool_use_id);
       const e = toolOf(s, was ? was.name : '?');
+      const bytes = resultSize(b.content);
+      let ms = 0;
       if (was) {
-        if (t && was.at) e.ms += Math.max(0, t - was.at);
+        ms = t && was.at ? Math.max(0, t - was.at) : 0;
+        e.ms += ms;
         s.open.delete(b.tool_use_id);
       }
-      e.bytes += resultSize(b.content);
-      if (b.is_error) e.errors++;
+      e.bytes += bytes;
+      if (b.is_error) {
+        e.errors++;
+        if (s.marks.length) s.marks[s.marks.length - 1].err++;
+      }
+      // The five biggest single results, which is where a leak looks like one
+      // call rather than like a tool. Kept by insertion rather than by sorting
+      // the lot at the end, because the lot is every result in the session.
+      if (!s.big.length || bytes > s.big[s.big.length - 1].bytes || s.big.length < BIG_N) {
+        s.big.push({ name: was ? was.name : '?', brief: was ? was.brief : '', bytes, ms, at: t });
+        s.big.sort((a, c) => c.bytes - a.bytes);
+        s.big.length = Math.min(s.big.length, BIG_N);
+      }
     }
   }
 }
@@ -1457,13 +1488,18 @@ function seriesData(s, n) {
 // reaches back as far as the pane is wide, and a cell belongs to whichever
 // series drew on it first — a line that disappears under another reads as a
 // reading that disappeared.
-function chart(h, n) {
+// The grid every line chart in the pane is drawn on. Values arrive between 0 and
+// 1 and come out as box drawing: a run along a row where the reading holds, a
+// corner where it turns, a stem down the rows it jumped. A cell belongs to
+// whichever series drew on it first — a line that disappears under another reads
+// as a reading that disappeared.
+function lineGrid(list, h, n) {
   const cells = Array.from({ length: h }, () => new Array(n).fill(null));
   const put = (r, c, ch, colour) => {
     if (r >= 0 && r < h && c >= 0 && c < n && !cells[r][c]) cells[r][c] = { ch, colour };
   };
-  for (const s of SERIES) {
-    const data = seriesData(s, n);
+  for (const s of list) {
+    const data = s.data;
     const from = n - data.length;             // a short history starts mid-grid
     const at = (v) => Math.max(0, Math.min(h - 1, Math.round((1 - v) * (h - 1))));
     data.forEach((v, i) => {
@@ -1475,14 +1511,23 @@ function chart(h, n) {
       for (let r = Math.min(p, y) + 1; r < Math.max(p, y); r++) put(r, from + i, '│', s.colour);
     });
   }
-  // The axis carries the scale, so the grid behind the lines can stay empty.
+  return cells;
+}
+
+// The axis carries the scale, so the grid behind the lines can stay empty. Its
+// top label is whatever the full height means for this chart.
+function gridRows(cells, top, extra) {
+  const h = cells.length;
   const mid = h >> 1;
-  return cells.map((row, r) => ({
-    chart: true,
-    text: '  ' + dim(r === 0 ? '100' : r === mid ? ' 50' : r === h - 1 ? '  0' : '   ')
+  return cells.map((row, r) => Object.assign({
+    text: '  ' + dim(r === 0 ? cell(top, 4, true) : r === h - 1 ? '   0' : '    ')
       + dim(r === 0 || r === mid || r === h - 1 ? '┤' : '│')
       + row.map((c) => (c ? sgr(c.colour, c.ch) : ' ')).join(''),
-  }));
+  }, extra || {}));
+}
+
+function chart(h, n) {
+  return gridRows(lineGrid(SERIES.map((s) => ({ data: seriesData(s, n), colour: s.colour })), h, n), '100%', { chart: true });
 }
 
 // Braille packs four rows of dots into a cell, so the same eight rows carry
@@ -1525,6 +1570,18 @@ function braille(h, n) {
 const HEAT = [17, 18, 20, 26, 32, 38, 44, 49, 83, 119, 154, 190, 220, 214, 208, 196];
 const STOPS = [[20, 30, 70], [30, 120, 200], [60, 200, 140], [230, 210, 60], [220, 60, 50]];
 
+// One cell of colour, the reading carried by the background so a row of them
+// reads as a band rather than as characters.
+const heatCell = (v) => '\x1b[48;5;' + HEAT[Math.max(0, Math.min(15, Math.round(v * 15)))] + 'm \x1b[0m';
+
+// A row of them, scaled to the busiest value in the row: what is being read is
+// which stretches were quiet, and an absolute scale answers that for nobody.
+function heatStrip(values, n) {
+  const peak = Math.max(...values, 1);
+  const cells = values.slice(-n).map((v) => heatCell(v / peak));
+  return ' '.repeat(Math.max(0, n - cells.length)) + cells.join('');
+}
+
 function heatRGB(v) {
   const x = Math.max(0, Math.min(0.999, v)) * (STOPS.length - 1);
   const [a, b] = [STOPS[Math.floor(x)], STOPS[Math.floor(x) + 1]];
@@ -1544,7 +1601,7 @@ function heat(n, dense) {
         cells.push('\x1b[38;2;' + heatRGB(data[i]) + 'm\x1b[48;2;' + heatRGB(data[i + 1] == null ? data[i] : data[i + 1]) + 'm▀\x1b[0m');
       }
     } else {
-      for (const v of data) cells.push('\x1b[48;5;' + HEAT[Math.max(0, Math.min(15, Math.round(v * 15)))] + 'm \x1b[0m');
+      for (const v of data) cells.push(heatCell(v));
     }
     return { chart: true, text: '  ' + dim(s.label.padEnd(4)) + ' ' + ' '.repeat(Math.max(0, n - cells.length)) + cells.join('') };
   });
@@ -1556,7 +1613,7 @@ function heat(n, dense) {
 // only the tall views are held back on a short one.
 function loadRows() {
   const h = Math.max(3, Math.min(8, Math.round((H() - 2) * 0.3)));
-  const n = Math.max(8, Math.min(HIST, W() - 6));
+  const n = Math.max(8, Math.min(HIST, W() - 7));
   const note = {
     ram: () => weigh(load.used || os.totalmem() - os.freemem()) + '/' + weigh(os.totalmem()),
     vram: () => (load.gpu ? weigh(load.gpu.used) + '/' + weigh(load.gpu.total) : ''),
@@ -1761,6 +1818,7 @@ function span(ms) {
 // tokens read out of cache cost a tenth of tokens written into it.
 function spentRows(s) {
   const cached = s.read + s.wrote;
+  const inTools = [...s.tools.values()].reduce((a, e) => a + e.ms, 0);
   const stuck = [...s.open.values()].filter((o) => o.at && Date.now() - o.at > 60000)
     .sort((a, b) => a.at - b.at);
   return [
@@ -1770,6 +1828,11 @@ function spentRows(s) {
     { text: '  ' + dim(cell('вихід', 11)) + num(s.out) + dim('  думання ' + num(s.think) + '  ·  ходів ' + s.turns) },
     { text: '  ' + dim(cell('час', 11)) + (s.to > s.from ? span(s.to - s.from) : '—')
       + dim('  транскрипт ' + weigh(s.bytes) + (s.model ? '  ·  ' + s.model : '')) },
+    // Wall clock split the only way a transcript can split it: time spent inside
+    // a tool, and everything else — the model writing, and the session waiting
+    // for a person.
+    { text: '  ' + dim(cell('з них', 11)) + span(inTools) + dim(' в інструментах  ·  ')
+      + span(Math.max(0, s.to - s.from - inTools)) + dim(' модель і очікування') },
     ...stuck.slice(0, 3).map((o) => ({
       text: '  ' + sgr('33', '⏱ ' + o.name + ' висить ' + span(Date.now() - o.at)),
     })),
@@ -1791,6 +1854,56 @@ function toolRows(s) {
   ];
 }
 
+// The session cut into as many slices as the pane is wide, so a strip under the
+// chart is time rather than turns: an hour of nothing looks like an hour of
+// nothing, which counting turns would hide.
+function slices(marks, n, pick, keepPeak) {
+  const out = new Array(n).fill(0);
+  const from = marks[0] ? marks[0].t : 0;
+  const to = marks[marks.length - 1] ? marks[marks.length - 1].t : 0;
+  if (!(to > from)) return out;
+  for (const m of marks) {
+    const i = Math.min(n - 1, Math.floor((m.t - from) / (to - from) * n));
+    const v = pick(m);
+    out[i] = keepPeak ? Math.max(out[i], v) : out[i] + v;
+  }
+  // A slice with no turn in it inherits the last reading, so the context line
+  // holds through a pause instead of falling to the floor and back.
+  if (keepPeak) for (let i = 1; i < n; i++) if (!out[i]) out[i] = out[i - 1];
+  return out;
+}
+
+// Where the context went over the session, drawn against its own peak. The drops
+// are compactions; a long climb with no drop is a session that has been carrying
+// everything it ever read.
+function ctxRows(s, h, n) {
+  const peak = Math.max(...s.marks.map((m) => m.ctx), 1);
+  const line = slices(s.marks, n, (m) => m.ctx, true).map((v) => v / peak);
+  return gridRows(lineGrid([{ data: line, colour: '36' }], h, n), num(peak));
+}
+
+// Two bands over the same span: what was generated, and where results came back
+// as errors. Bright patches in the second one are retry loops, and they sit
+// under the minutes that produced them.
+function bandRows(s, n) {
+  const room = n - 3;
+  return [
+    { text: '  ' + dim(cell('вихід', 6)) + heatStrip(slices(s.marks, room, (m) => m.out), room) },
+    { text: '  ' + dim(cell('збої', 6)) + heatStrip(slices(s.marks, room, (m) => m.err), room) },
+    { text: dim('  ' + cell(s.from ? hhmm(new Date(s.from).toISOString()) : '', 6)
+      + cell(s.to ? hhmm(new Date(s.to).toISOString()) : '', room, true)) },
+  ];
+}
+
+// One call, not one tool: a leak is often a single result nobody looked at.
+function bigRows(s) {
+  const room = Math.max(12, W() - 30);
+  return s.big.filter((b) => b.bytes).map((b) => ({
+    text: '  ' + cell(clip(b.name, 12), 12) + cell(num(b.bytes / 4), 6, true)
+      + dim(cell(b.ms > 1000 ? Math.round(b.ms / 1000) + ' с' : '', 6, true)) + '  ' + dim(clip(b.brief, room)),
+  }));
+}
+
 function renderStats() {
   const out = [];
   rowHits = {}; blockAt = {};
@@ -1801,9 +1914,16 @@ function renderStats() {
   if (!s) {
     layout(out, [{ key: 'ВИТРАТИ', label: 'ВИТРАТИ', items: [], count: '', empty: 'рахую транскрипт…' }], H() - 2);
   } else {
+    const n = Math.max(12, W() - 7);
+    const h = Math.max(3, Math.min(7, Math.round((H() - 2) * 0.18)));
     layout(out, [
       { key: 'ВИТРАТИ', label: clip('ВИТРАТИ · ' + title, 40), items: spentRows(s), count: '' },
+      ...(s.marks.length > 1 ? [
+        { key: 'КОНТЕКСТ', label: 'КОНТЕКСТ', items: ctxRows(s, h, n), count: '' },
+        { key: 'ПЕРЕБІГ', label: 'ПЕРЕБІГ', items: bandRows(s, n), count: '' },
+      ] : []),
       { key: 'ІНСТРУМЕНТИ', label: 'ІНСТРУМЕНТИ', items: toolRows(s), count: '' },
+      ...(s.big.length ? [{ key: 'НАЙДОРОЖЧЕ', label: 'НАЙДОРОЖЧЕ', items: bigRows(s), count: '' }] : []),
     ], H() - 2);
   }
   paint(out, dim(' a — назад · Tab — список · q — вихід'));

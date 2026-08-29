@@ -213,7 +213,7 @@ for (const i of rules.slice(1)) {
 // A result is a string on some calls and a list of blocks on others; a call is
 // timed by the gap to the result carrying its id; and the context is the newest
 // prompt, not the sum of every prompt ever sent.
-const stat = eval('(function(){' + src.match(/function newStats[\s\S]*?\nfunction statLine[\s\S]*?\n\}/)[0] + '\nreturn { newStats, statLine } })()');
+const stat = eval('(function(){' + src.match(/const BIG_N = [\s\S]*?\nfunction statLine[\s\S]*?\n\}/)[0] + '\nreturn { newStats, statLine } })()');
 const spent = stat.newStats();
 const when = (s) => new Date(Date.parse('2026-08-29T10:00:00Z') + s * 1000).toISOString();
 for (const [ts, message] of [
@@ -296,9 +296,10 @@ assert.strictEqual(unix.vmUsed([
 // axis is cut off first — it is drawn on every row and would answer for all of
 // them.
 const plot = (cpu, h, n) => eval('(function(){ const dim = (s) => s, sgr = (c, s) => s;'
+  + ' const cell = (s, w, right) => (right ? String(s).padStart(w) : String(s).padEnd(w));'
   + ' const load = { cpu: ' + JSON.stringify(cpu) + ', ram: [], vram: [], net: [] };'
   + src.match(/const SERIES = [\s\S]*?\nfunction chart[\s\S]*?\n\}/)[0]
-  + '\nreturn chart })()')(h, n).map((r) => /\S/.test(r.text.slice(6)));
+  + '\nreturn chart })()')(h, n).map((r) => /\S/.test(r.text.slice(7)));
 
 assert.deepStrictEqual(plot([1, 1], 4, 4), [true, false, false, false], 'a full reading must draw on the top row alone');
 assert.deepStrictEqual(plot([0, 0], 4, 4), [false, false, false, true], 'an empty one must draw on the floor alone');
