@@ -1,8 +1,8 @@
 # claude-sidebar
 
 A companion pane for [Claude Code](https://claude.com/claude-code). Run it in a split terminal next
-to your session and it shows, live, what that session is doing — the plan it is working through, the
-files it has touched, the links it produced, and the images you pasted in. Press `Tab` and it becomes
+to your session and it shows, live, what that session is doing — the files it has touched, the links it
+produced, the images you pasted in, and what the machine is spending itself on meanwhile. Press `Tab` and it becomes
 a list of every Claude session on the machine; pick one and it opens in a new terminal tab, resumed.
 
 It latches onto the session in its own tab and stays there, so a pane open beside reef keeps showing
@@ -32,10 +32,9 @@ is following:
      │        ╭──────────────────────
     0┤────────╯
 
-── ПЛАН 3 ───────────────────────────────────────────
-  ✓ Diagnose why Warp closed
-  ▸ Make the session rows clickable
-  · Write the README
+  vite.js            14%   1.2G  claude
+  chrome              5%   1.1G
+  MsMpEng             2%   481M  services
 
 ── МЕДІА 1 ──────────────────────────────────────────
   1.png  121K  image-cache/9de93e09…/1.png
@@ -93,6 +92,12 @@ through to red pinned — three rows instead of nine, and no series can hide und
 paints two samples into every cell, upper half over lower, so the same three rows carry twice the
 history. The choice lives as long as the pane does; a restart comes back on lines.
 
+Under the chart are the four heaviest processes on the machine, by processor time and then by memory,
+with what each is holding and who started it. `claude` marks a process somewhere in Claude Code's own
+tree — a vite dev server it launched, a headless browser a test left behind — which is the difference
+between a machine that is busy because of the session beside you and one that is busy in spite of it.
+A node process is named by the script it is running, because `node.exe` names nothing. Windows only.
+
 **The session list** opens on `Tab`. Every Claude session on the machine, newest first, titled by what
 the session was actually about. Move the highlight and the blocks below it switch to that session's
 project, media, files and links, so you can find a conversation by what it touched rather than by its
@@ -103,12 +108,19 @@ addresses it is deployed to — the repo and the addresses clickable. It is on b
 view shows it for the session it is following, the list for the one under the highlight.
 
 ```
-── ПРОЄКТ 9 ─────────────────────────────────────────
+── ПРОЄКТ 16 ─────────────────────────────────────────
   github.com/Moonkeemoo/reef            1.2G
     з них node_modules  840M
+  пн ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇
+  вт ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇
+  ср ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇
+  чт ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇
+  пт ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇
+  сб ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇
+  нд ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇
+
   feature/waves  ● змінено 3  ↑2 не запушено
     від master  ↓12 відстала  ↑4 своїх
-    60 дн ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
     * 33b0a63   4 хв  Hold one session per pane
     * 8a72738  2 год  Round the line count
     * 41ccca4   1 дн  Weigh the project and report git
@@ -127,9 +139,11 @@ picture of another project's pane, and while it counted, every session working i
 reported as deployed to reef. The weight names a child directory only when that child is most of the
 answer, which is the only case you can act on.
 
-Above the commits is two months of them, a column a day, shaded the way GitHub shades a contribution
-graph and cut to whatever the pane can hold. It answers the question the newest commit cannot: not
-when work last happened here, but whether it has been happening at all.
+Between the repo and its branch sits half a year of commits: a row per weekday, a column per week, the
+current one last, shaded the way GitHub shades a contribution graph. It belongs to the repo rather
+than to the branch, and it answers what no single commit can — not when work last happened here, but
+whether it has been happening at all. Shade is relative to the busiest day on show, so a quiet fortnight
+in a busy repo still reads as quiet.
 
 Under the branch come its last four commits, oldest at the bottom, each with how long ago it landed —
 which is what says whether the branch is still warm without opening a terminal to ask. The column in

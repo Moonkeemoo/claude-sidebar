@@ -503,7 +503,7 @@ async function dirSize(dir) {
 }
 
 const LOG_N = 4;                   // commits shown under the branch
-const HEAT_DAYS = 60;              // days of commit history behind the strip
+const HEAT_DAYS = 26 * 7;          // half a year of commits, as whole weeks
 const defaults = new Map();        // what the remote calls its default branch, per repo
 
 // A remote's default branch is settled at clone time and does not move while the
@@ -637,6 +637,91 @@ function sampleLoad() {
   keep(load.ram, 1 - os.freemem() / os.totalmem());
   const g = slow('gpu', GPU_TTL, gpuMem);
   if (g) { load.gpu = g; keep(load.vram, g.used / g.total); }
+}
+
+// ---- what is holding the machine ----
+// A pane that says the box is at 90% and nothing about what is holding it there
+// sends you to the task manager anyway. The two sorts are deliberate: the
+// heaviest by memory and the heaviest by processor time are rarely the same
+// process, and one query returning both beats two queries. Windows only, like
+// the orphan check.
+const PROC_TTL = 5000;
+const PROC_N = 4;                            // rows shown under the chart
+const PROC_SKIP = /^(System|System Idle Process|Memory Compression|Registry)$/i;
+const PROC_Q = [
+  '$a = Get-CimInstance Win32_Process;',
+  '$t = @($a | Sort-Object WorkingSetSize -Descending | Select-Object -First 12)',
+  ' + @($a | Sort-Object {$_.KernelModeTime + $_.UserModeTime} -Descending | Select-Object -First 12);',
+  '$top = $t | Sort-Object ProcessId -Unique | ForEach-Object {',
+  '  $c = [string]::Empty;',
+  '  if ($_.CommandLine) { $c = $_.CommandLine.Substring(0, [Math]::Min(160, $_.CommandLine.Length)) };',
+  '  [pscustomobject]@{ id = $_.ProcessId; pp = $_.ParentProcessId; n = $_.Name; ws = $_.WorkingSetSize;',
+  '    t = ($_.KernelModeTime + $_.UserModeTime); c = $c } };',
+  '$all = $a | ForEach-Object { [pscustomobject]@{ id = $_.ProcessId; pp = $_.ParentProcessId; n = $_.Name } };',
+  '[pscustomobject]@{ top = @($top); all = @($all) } | ConvertTo-Json -Compress -Depth 4',
+].join(' ');
+
+let procAt = { at: 0, cpu: new Map() };
+
+// node.exe says nothing; the script it is running says everything. The last
+// script path on the command line is the one node was handed.
+function procName(p) {
+  const bare = String(p.n || '?').replace(/\.exe$/i, '');
+  if (!/^node$/i.test(bare)) return bare;
+  const hits = String(p.c || '').match(/[\w.-]+\.(?:m?[jt]s)\b/g);
+  return hits ? hits[hits.length - 1] : bare;
+}
+
+// Claude spawns bash, node and browsers, and none of them say so on their own
+// command line — the answer is up the parent chain, where claude.exe sits.
+function claudeOwned(id, by) {
+  for (let i = 0, cur = id; i < 12 && cur; i++) {
+    const p = by.get(cur);
+    if (!p) return false;
+    if (/^claude\.exe$/i.test(p.n)) return true;
+    cur = p.pp;
+  }
+  return false;
+}
+
+async function processes() {
+  if (process.platform !== 'win32') return [];
+  const { out } = await capture('powershell', ['-NoProfile', '-NonInteractive', '-Command', PROC_Q]);
+  let d; try { d = JSON.parse(out); } catch { return []; }
+  const by = new Map((d.all || []).map((p) => [p.id, p]));
+  const now = Date.now();
+  const span = now - procAt.at;
+  const cores = os.cpus().length;
+  const cpu = new Map();
+  const rows = [];
+  for (const p of d.top || []) {
+    cpu.set(p.id, p.t);
+    if (p.id <= 4 || PROC_SKIP.test(p.n)) continue;
+    const was = procAt.cpu.get(p.id);
+    // CIM counts processor time in 100ns ticks, over every core there is.
+    const pct = procAt.at && was != null && span > 0 ? Math.max(0, (p.t - was) / 1e4 / (span * cores) * 100) : 0;
+    const parent = by.get(p.pp);
+    rows.push({
+      name: procName(p),
+      cpu: pct,
+      ws: p.ws || 0,
+      claude: claudeOwned(p.id, by),
+      owner: parent ? String(parent.n).replace(/\.exe$/i, '') : '',
+    });
+  }
+  procAt = { at: now, cpu };
+  return rows.sort((a, b) => (b.cpu - a.cpu) || (b.ws - a.ws)).slice(0, PROC_N);
+}
+
+function procRows() {
+  return (slow('procs', PROC_TTL, processes) || []).map((p) => ({
+    text: '  ' + clip(p.name, 17).padEnd(16) + (Math.round(p.cpu) + '%').padStart(5) + '  '
+      // Who started it, when that is worth a word: Claude's own tree, or a
+      // parent that is not simply another copy of the same program.
+      + weigh(p.ws).padStart(5) + '  '
+      + (p.claude ? (p.name === 'claude' ? '' : sgr('36', 'claude'))
+        : p.owner && p.owner !== p.name ? dim(p.owner) : ''),
+  }));
 }
 
 // Open a link or a file with whatever the OS has registered for it. On Windows
@@ -1238,9 +1323,11 @@ function loadRows() {
   // Under about two dozen rows a tall chart would be handed two of them and
   // paint its empty ceiling, so the numbers go on alone.
   const row = { chart: true, text: '  ' + legend.join(dim('  ·  ')) };
+  const heavy = procRows();
   const tall = chartMode < 2;
-  if (tall && H() < 24) return [row];
-  return [row, ...(chartMode === 0 ? chart(h, n) : chartMode === 1 ? braille(h, n) : heat(n, chartMode === 3))];
+  if (tall && H() < 24) return [row, ...heavy];
+  const body = chartMode === 0 ? chart(h, n) : chartMode === 1 ? braille(h, n) : heat(n, chartMode === 3);
+  return [row, ...body, ...(heavy.length ? [{ text: '' }, ...heavy] : [])];
 }
 
 // Where the selected session's work lives and what it has been deployed to.
@@ -1262,16 +1349,27 @@ function gitRow(g) {
   return '  ' + sgr('1', g.branch) + '  ' + (bits.length ? bits.join('  ') : dim('чисто'));
 }
 
-// Commits per day, the way GitHub colours them, cut to whatever the pane can
-// hold — the newest days are the ones kept. Shade is relative to the busiest day
-// in the window, because what matters is which days were the quiet ones.
+// Commits the way GitHub draws them: a row per weekday, a column per week, the
+// current week last. Shade is relative to the busiest day on show, so what reads
+// is which weeks were the quiet ones — the question a repo's own history answers
+// and its newest commit does not. Cut to the weeks the pane can hold.
 const GREEN = [236, 22, 28, 34, 40];
+const WEEKDAYS = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'нд'];
 
-function commitHeat(days) {
-  const room = Math.max(10, Math.min(days.length, W() - 12));
-  const window = days.slice(-room);
-  const peak = Math.max(1, ...window);
-  return window.map((n) => sgr('38;5;' + GREEN[n ? Math.min(4, Math.ceil(n / peak * 4)) : 0], '▇')).join('');
+function commitMatrix(days) {
+  const weeks = Math.max(6, Math.min(Math.ceil(days.length / 7), Math.floor((W() - 8) / 2)));
+  const grid = Array.from({ length: 7 }, () => new Array(weeks).fill(null));
+  const todayRow = (new Date().getDay() + 6) % 7;     // Monday first, as the labels are
+  days.forEach((n, i) => {
+    const back = days.length - 1 - i;
+    const col = weeks - 1 - Math.floor((back + (6 - todayRow)) / 7);
+    if (col >= 0) grid[((todayRow - back) % 7 + 7) % 7][col] = n;
+  });
+  const peak = Math.max(1, ...days);
+  return grid.map((row, i) => ({
+    text: '  ' + dim(WEEKDAYS[i]) + ' '
+      + row.map((n) => (n == null ? ' ' : sgr('38;5;' + GREEN[n ? Math.min(4, Math.ceil(n / peak * 4)) : 0], '▇'))).join(' '),
+  }));
 }
 
 function projectItems(info) {
@@ -1287,9 +1385,11 @@ function projectItems(info) {
   if (size && size.blame) rows.push({ text: dim('    з них ' + size.blame.name + '  ' + weigh(size.blame.bytes)) });
   const git = info.git ? slow('git:' + info.dir, GIT_TTL, () => gitState(info.dir)) : null;
   if (git) {
+    // The half-year belongs to the repo, above the line where the branch starts.
+    if (git.days) rows.push(...commitMatrix(git.days));
+    rows.push({ text: '' });
     rows.push({ text: gitRow(git) });
     if (git.base) rows.push({ text: '    ' + dim('від ' + git.base.name) + '  ' + (git.base.behind ? sgr('33', '↓' + git.base.behind + ' відстала') : dim('свіжа')) + (git.base.ahead ? dim('  ↑' + git.base.ahead + ' своїх') : '') });
-    if (git.days) rows.push({ text: '    ' + dim(HEAT_DAYS + ' дн') + ' ' + commitHeat(git.days) });
     // The tail of the history, newest first, with its age: how long ago work
     // stopped here is the whole of "is this branch still warm". A commit opens
     // on GitHub, where the diff is.
@@ -1356,7 +1456,9 @@ function renderWatch() {
     ...(strayRows.length ? [{ key: 'СИРОТИ', label: 'СИРОТИ', items: strayRows }] : []),
     { key: 'ЗАЛІЗО', label: 'ЗАЛІЗО', items: loadRows(), count: CHART_MODES[chartMode] },
     { key: 'ПРОЄКТ', label: 'ПРОЄКТ', items: projectItems(projectOf({ path: file }, live)) },
-    { key: 'ПЛАН', label: 'ПЛАН', items: todos, empty: 'немає активного плану' },
+    // A session that never writes a todo list — which, on this machine, is every
+    // session — would otherwise hold three rows open to say so forever.
+    ...(todos.length ? [{ key: 'ПЛАН', label: 'ПЛАН', items: todos }] : []),
     ...bodyBlocks(live, live.cwd),
   ], H() - 2);
 
