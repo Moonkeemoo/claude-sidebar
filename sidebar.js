@@ -1053,41 +1053,42 @@ function bodyItems(st, base) {
 
 // One chart with three lines on it rather than three bars beside each other:
 // the same grid, the newest sample at the right edge, so a build that takes the
-// machine shows up as one shape instead of three. A braille cell is a grid of
-// two dots by four, so eight rows of pane hold thirty-two levels and a row holds
-// two samples per column — fine enough to join the readings into a line.
-const DOT = [[1, 2, 4, 64], [8, 16, 32, 128]];
+// machine shows up as one shape instead of three.
 const SERIES = [
   { key: 'cpu', label: 'CPU', colour: '33' },
   { key: 'ram', label: 'RAM', colour: '36' },
   { key: 'vram', label: 'VRAM', colour: '32' },
 ];
 
+// Lines, not marks: a run along a row where the reading holds, a corner where it
+// turns, a stem down the rows it jumped. One column is one sample, so the chart
+// reaches back as far as the pane is wide, and a cell belongs to whichever
+// series drew on it first — a line that disappears under another reads as a
+// reading that disappeared.
 function chart(h, n) {
   const cells = Array.from({ length: h }, () => new Array(n).fill(null));
-  const top = h * 4 - 1;
-  const put = (dx, dy, colour) => {
-    const row = cells[dy >> 2];
-    const cur = row[dx >> 1] || { bits: 0, colour };
-    cur.bits |= DOT[dx & 1][dy & 3];
-    row[dx >> 1] = cur;                       // the colour stays with whoever got here first
+  const put = (r, c, ch, colour) => {
+    if (r >= 0 && r < h && c >= 0 && c < n && !cells[r][c]) cells[r][c] = { ch, colour };
   };
   for (const s of SERIES) {
-    const data = load[s.key].slice(-n * 2);
-    const from = n * 2 - data.length;         // a short history starts mid-grid
-    let prev = null;
+    const data = load[s.key].slice(-n);
+    const from = n - data.length;             // a short history starts mid-grid
+    const at = (v) => Math.max(0, Math.min(h - 1, Math.round((1 - v) * (h - 1))));
     data.forEach((v, i) => {
-      const y = Math.max(0, Math.min(top, Math.round((1 - v) * top)));
-      // Fill the gap the reading jumped, so the series reads as one line rather
-      // than as a scatter of the samples it happens to be made of.
-      for (let d = Math.min(y, prev == null ? y : prev); d <= Math.max(y, prev == null ? y : prev); d++) put(from + i, d, s.colour);
-      prev = y;
+      const y = at(v);
+      const p = i ? at(data[i - 1]) : y;
+      if (p === y) return put(y, from + i, '─', s.colour);
+      put(p, from + i, p < y ? '╮' : '╯', s.colour);
+      put(y, from + i, p < y ? '╰' : '╭', s.colour);
+      for (let r = Math.min(p, y) + 1; r < Math.max(p, y); r++) put(r, from + i, '│', s.colour);
     });
   }
+  // The axis carries the scale, so the grid behind the lines can stay empty.
   const mid = h >> 1;
   return cells.map((row, r) => ({
-    text: '  ' + dim(r === 0 ? '100' : r === h - 1 ? '  0' : '   ') + ' '
-      + row.map((c, i) => (c ? sgr(c.colour, String.fromCharCode(0x2800 + c.bits)) : r === mid && i % 5 === 0 ? dim('·') : ' ')).join(''),
+    text: '  ' + dim(r === 0 ? '100' : r === mid ? ' 50' : r === h - 1 ? '  0' : '   ')
+      + dim(r === 0 || r === mid || r === h - 1 ? '┤' : '│')
+      + row.map((c) => (c ? sgr(c.colour, c.ch) : ' ')).join(''),
   }));
 }
 
@@ -1096,7 +1097,7 @@ function chart(h, n) {
 // are the part worth keeping.
 function loadRows() {
   const h = Math.max(3, Math.min(8, Math.round((H() - 2) * 0.3)));
-  const n = Math.max(8, Math.min(HIST, W() - 7));
+  const n = Math.max(8, Math.min(HIST, W() - 6));
   const note = {
     ram: () => weigh(os.totalmem() - os.freemem()) + '/' + weigh(os.totalmem()),
     vram: () => (load.gpu ? weigh(load.gpu.used) + '/' + weigh(load.gpu.total) : ''),

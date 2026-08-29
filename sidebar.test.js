@@ -200,12 +200,14 @@ assert.ok(!opens.some((o) => /\.js$/.test(o)), 'a source file is still listed: '
 
 // ---- the load chart spans its grid, and joins its readings into a line ----
 // A reading of 1 belongs on the top row and a reading of 0 on the bottom one,
-// and a jump between two of them has to fill the rows in between: braille dots
-// left unjoined look like a chart and read as a scatter of samples.
+// and a jump between two of them has to draw the rows in between: corners with
+// nothing between them look like a chart and read as a scatter of samples. The
+// axis is cut off first — it is drawn on every row and would answer for all of
+// them.
 const plot = (cpu, h, n) => eval('(function(){ const dim = (s) => s, sgr = (c, s) => s;'
   + ' const load = { cpu: ' + JSON.stringify(cpu) + ', ram: [], vram: [] };'
-  + src.match(/const DOT = [\s\S]*?\nfunction chart[\s\S]*?\n\}/)[0]
-  + '\nreturn chart })()')(h, n).map((r) => /[^\s\d·]/.test(r.text));
+  + src.match(/const SERIES = [\s\S]*?\nfunction chart[\s\S]*?\n\}/)[0]
+  + '\nreturn chart })()')(h, n).map((r) => /\S/.test(r.text.slice(6)));
 
 assert.deepStrictEqual(plot([1, 1], 4, 4), [true, false, false, false], 'a full reading must draw on the top row alone');
 assert.deepStrictEqual(plot([0, 0], 4, 4), [false, false, false, true], 'an empty one must draw on the floor alone');
