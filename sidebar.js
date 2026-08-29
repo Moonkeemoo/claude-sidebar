@@ -1357,7 +1357,7 @@ const GREEN = [236, 22, 28, 34, 40];
 const WEEKDAYS = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'нд'];
 
 function commitMatrix(days) {
-  const weeks = Math.max(6, Math.min(Math.ceil(days.length / 7), Math.floor((W() - 8) / 2)));
+  const weeks = Math.max(6, Math.min(Math.ceil(days.length / 7), W() - 8));
   const grid = Array.from({ length: 7 }, () => new Array(weeks).fill(null));
   const todayRow = (new Date().getDay() + 6) % 7;     // Monday first, as the labels are
   days.forEach((n, i) => {
@@ -1368,7 +1368,7 @@ function commitMatrix(days) {
   const peak = Math.max(1, ...days);
   return grid.map((row, i) => ({
     text: '  ' + dim(WEEKDAYS[i]) + ' '
-      + row.map((n) => (n == null ? ' ' : sgr('38;5;' + GREEN[n ? Math.min(4, Math.ceil(n / peak * 4)) : 0], '▇'))).join(' '),
+      + row.map((n) => (n == null ? ' ' : sgr('38;5;' + GREEN[n ? Math.min(4, Math.ceil(n / peak * 4)) : 0], '▇'))).join(''),
   }));
 }
 
