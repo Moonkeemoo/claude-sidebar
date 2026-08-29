@@ -198,11 +198,17 @@ const opens = Object.values(watch.hits).map((h) => h.open).filter((o) => o && !/
 assert.ok(opens.some((o) => o.endsWith('README.md')), 'the note the session wrote is not in the block');
 assert.ok(!opens.some((o) => /\.js$/.test(o)), 'a source file is still listed: ' + opens.join(' '));
 
-// ---- the load graph stays inside its ramp and its column ----
-eval(src.match(/function spark[\s\S]*?\n\}/)[0]);
-assert.strictEqual(spark([0, 0.5, 1], 3), '▁▅█', 'the ramp must span the whole series');
-assert.strictEqual(spark([1], 3), '  █', 'a short history pads from the left, so the numbers beside it hold one column');
-assert.strictEqual(spark([2, -1], 2), '█▁', 'a reading outside 0..1 must still land inside the ramp');
+// ---- the load chart spans its grid, floor to ceiling ----
+// A reading of 1 belongs on the top row and a reading of 0 on the bottom one.
+// Get the halves the wrong way round and every line sits a row off, which looks
+// like a chart and reads like the wrong number.
+const chart = eval('(function(){ const dim = (s) => s, sgr = (c, s) => s;'
+  + ' const load = { cpu: [0, 1], ram: [], vram: [] };'
+  + src.match(/const SERIES = [\s\S]*?\nfunction chart[\s\S]*?\n\}/)[0]
+  + '\nreturn chart })()');
+const plot = chart(4, 2).map((r) => r.text.slice(-2));      // the two data columns
+assert.strictEqual(plot[0], ' ▀', 'a full reading must sit on the top row: ' + JSON.stringify(plot));
+assert.strictEqual(plot[3], '▄ ', 'an empty one must sit on the floor: ' + JSON.stringify(plot));
 
 // ---- and no control character got baked into the source ----
 // A shell heredoc collapses the escapes in the text it writes: `\b` becomes a

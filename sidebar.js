@@ -555,7 +555,7 @@ function orphanRows(rows, now, minAge = ORPHAN_AGE) {
 // as the pane is wide. CPU comes off the tick counters node already keeps; VRAM
 // needs nvidia-smi, and its absence is a row that never appears.
 const GPU_TTL = 3000;
-const HIST = 64;
+const HIST = 240;
 const load = { cpu: [], ram: [], vram: [], gpu: null };
 let cpuAt = cpuTicks();
 
@@ -894,8 +894,10 @@ function ago(ms) {
 
 function rule(title, count) {
   const w = W();
-  const plain = '── ' + title + (count != null ? ' ' + count : '') + ' ';
-  return dim('── ') + head(title) + (count != null ? dim(' ' + count) : '') + ' ' + dim('─'.repeat(Math.max(0, w - plain.length)));
+  // An empty count is a block that has nothing to count — the chart — and it
+  // takes no space in the rule at all.
+  const plain = '── ' + title + (count ? ' ' + count : '') + ' ';
+  return dim('── ') + head(title) + (count ? dim(' ' + count) : '') + ' ' + dim('─'.repeat(Math.max(0, w - plain.length)));
 }
 
 function shorten(p, w, base) {
@@ -1049,26 +1051,57 @@ function bodyItems(st, base) {
   };
 }
 
-// The newest sample sits on the right, the number beside it. The bar is padded
-// from the left, so a pane that has just opened does not walk its numbers across
-// the screen while the history fills up.
-function spark(series, n) {
-  return series.slice(-n).map((v) => '▁▂▃▄▅▆▇█'[Math.max(0, Math.min(7, Math.round(v * 7)))]).join('').padStart(n);
+// One chart with three lines on it rather than three bars beside each other:
+// the same grid, the newest sample at the right edge, so a build that takes the
+// machine shows up as one shape instead of three. A cell is split in half, which
+// gives six rows twelve levels — enough to tell 40% from 45%.
+const SERIES = [
+  { key: 'cpu', label: 'CPU', colour: '33' },
+  { key: 'ram', label: 'RAM', colour: '36' },
+  { key: 'vram', label: 'VRAM', colour: '32' },
+];
+
+function chart(h, n) {
+  const grid = Array.from({ length: h }, () => new Array(n).fill(null));
+  for (const s of SERIES) {
+    const data = load[s.key].slice(-n);
+    const from = n - data.length;             // a short history starts mid-grid
+    data.forEach((v, i) => {
+      const y = Math.max(0, Math.min(h * 2 - 1, Math.round(v * (h * 2 - 1))));
+      const ch = y % 2 ? '▀' : '▄';
+      const at = grid[h - 1 - (y >> 1)];
+      // Two lines in one cell: the cell fills, and the colour stays with
+      // whichever got there first, because a line that vanishes reads as a
+      // reading that vanished.
+      at[from + i] = at[from + i] ? { ch: at[from + i].ch === ch ? ch : '█', colour: at[from + i].colour } : { ch, colour: s.colour };
+    });
+  }
+  const mid = h >> 1;
+  return grid.map((cells, r) => ({
+    text: '  ' + dim(r === 0 ? '100' : r === h - 1 ? '  0' : '   ') + ' '
+      + cells.map((c, i) => (c ? sgr(c.colour, c.ch) : r === mid && i % 5 === 0 ? dim('·') : ' ')).join(''),
+  }));
 }
 
+// The chart takes about a third of the pane, and the numbers sit above it: a
+// window too short for the whole block loses its lower rows, and the readings
+// are the part worth keeping.
 function loadRows() {
-  const n = Math.max(8, Math.min(HIST, W() - 30));
-  const row = (label, series, note) => {
-    const v = series.length ? series[series.length - 1] : 0;
-    const num = (Math.round(v * 100) + '%').padStart(4);
-    return { text: '  ' + dim(label) + ' ' + spark(series, n) + ' ' + (v >= 0.85 ? sgr('33', num) : num) + dim(note ? '  ' + note : '') };
+  const h = Math.max(3, Math.min(8, Math.round((H() - 2) * 0.3)));
+  const n = Math.max(8, Math.min(HIST, W() - 7));
+  const note = {
+    ram: () => weigh(os.totalmem() - os.freemem()) + '/' + weigh(os.totalmem()),
+    vram: () => (load.gpu ? weigh(load.gpu.used) + '/' + weigh(load.gpu.total) : ''),
   };
-  const rows = [
-    row('CPU ', load.cpu),
-    row('RAM ', load.ram, weigh(os.totalmem() - os.freemem()) + '/' + weigh(os.totalmem())),
-  ];
-  if (load.gpu) rows.push(row('VRAM', load.vram, weigh(load.gpu.used) + '/' + weigh(load.gpu.total)));
-  return rows;
+  const legend = SERIES.filter((s) => load[s.key].length).map((s) => {
+    const v = load[s.key][load[s.key].length - 1];
+    const tail = note[s.key] ? note[s.key]() : '';
+    return sgr(s.colour, s.label) + ' ' + Math.round(v * 100) + '%' + (tail ? dim(' ' + tail) : '');
+  });
+  // Under about two dozen rows the chart would be handed two of them and paint
+  // its empty ceiling, so the numbers go on alone.
+  const row = { text: '  ' + legend.join(dim('  ·  ')) };
+  return H() < 24 ? [row] : [row, ...chart(h, n)];
 }
 
 // Where the selected session's work lives and what it has been deployed to.
