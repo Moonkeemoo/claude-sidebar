@@ -23,12 +23,12 @@ is following:
  ◑ 1 год  Пошук інструменту    Edit sidebar.js
 ── ЗАЛІЗО ───────────────────────────────────────────
   CPU 31%  ·  RAM 56% 17.9G/31.9G  ·  VRAM 24% 3.8G
-  100                                     ▄▄▄▄▄
-                                     ▄▄▄▄▄
-      ·    ·    ·    ·   ▀▀▀▀▀▀▀▀▀▀▀▀·    ·    ·
-       ▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
-                              ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
-    0 ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
+  100                                  ⠒⠶⠳⠒⠒
+                                    ⡰⠋     ⠳⠒⠒⠒
+      ·    ·    ·    ·    ·  ⠤⠤⠤⠤⠤⠤⠤⠤·    ·    ·
+       ⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠤⠧
+                                ⠐⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒
+    0 ⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠒⠰⠇
 ── ПЛАН 3 ───────────────────────────────────────────
   ✓ Diagnose why Warp closed
   ▸ Make the session rows clickable
@@ -71,10 +71,12 @@ under two names — absolute from an `Edit`, relative from a shell line — is o
 ЗАЛІЗО is the machine rather than the session: three lines on one grid, one sample a second, the
 newest at the right edge and the history reaching back as far as the pane is wide. CPU is yellow, RAM
 cyan, VRAM green, and the numbers above the chart are the current reading of each, so a build eating
-the box is one shape you recognise from across the room. A cell is split into halves, which gives the
-grid twice the rows in resolution. VRAM comes from `nvidia-smi`; where that is not on PATH the line
-and its number are absent. Under about two dozen rows the pane keeps the numbers and drops the chart,
-which would be squeezed into its own empty ceiling.
+the box is one shape you recognise from across the room. The lines are drawn in braille, whose cell
+is a grid of two dots by four: eight rows of pane carry thirty-two levels and hold two samples per
+column, and the gap between one reading and the next is filled in, so a series reads as a line rather
+than as the scatter of samples it is made of. VRAM comes from `nvidia-smi`; where that is not on PATH
+the line and its number are absent. Under about two dozen rows the pane keeps the numbers and drops
+the chart, which would be squeezed into its own empty ceiling.
 
 **The session list** opens on `Tab`. Every Claude session on the machine, newest first, titled by what
 the session was actually about. Move the highlight and the blocks below it switch to that session's

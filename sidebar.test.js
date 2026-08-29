@@ -198,17 +198,18 @@ const opens = Object.values(watch.hits).map((h) => h.open).filter((o) => o && !/
 assert.ok(opens.some((o) => o.endsWith('README.md')), 'the note the session wrote is not in the block');
 assert.ok(!opens.some((o) => /\.js$/.test(o)), 'a source file is still listed: ' + opens.join(' '));
 
-// ---- the load chart spans its grid, floor to ceiling ----
-// A reading of 1 belongs on the top row and a reading of 0 on the bottom one.
-// Get the halves the wrong way round and every line sits a row off, which looks
-// like a chart and reads like the wrong number.
-const chart = eval('(function(){ const dim = (s) => s, sgr = (c, s) => s;'
-  + ' const load = { cpu: [0, 1], ram: [], vram: [] };'
-  + src.match(/const SERIES = [\s\S]*?\nfunction chart[\s\S]*?\n\}/)[0]
-  + '\nreturn chart })()');
-const plot = chart(4, 2).map((r) => r.text.slice(-2));      // the two data columns
-assert.strictEqual(plot[0], ' ▀', 'a full reading must sit on the top row: ' + JSON.stringify(plot));
-assert.strictEqual(plot[3], '▄ ', 'an empty one must sit on the floor: ' + JSON.stringify(plot));
+// ---- the load chart spans its grid, and joins its readings into a line ----
+// A reading of 1 belongs on the top row and a reading of 0 on the bottom one,
+// and a jump between two of them has to fill the rows in between: braille dots
+// left unjoined look like a chart and read as a scatter of samples.
+const plot = (cpu, h, n) => eval('(function(){ const dim = (s) => s, sgr = (c, s) => s;'
+  + ' const load = { cpu: ' + JSON.stringify(cpu) + ', ram: [], vram: [] };'
+  + src.match(/const DOT = [\s\S]*?\nfunction chart[\s\S]*?\n\}/)[0]
+  + '\nreturn chart })()')(h, n).map((r) => /[^\s\d·]/.test(r.text));
+
+assert.deepStrictEqual(plot([1, 1], 4, 4), [true, false, false, false], 'a full reading must draw on the top row alone');
+assert.deepStrictEqual(plot([0, 0], 4, 4), [false, false, false, true], 'an empty one must draw on the floor alone');
+assert.deepStrictEqual(plot([0, 1], 4, 4), [true, true, true, true], 'a jump between readings must be joined into a line');
 
 // ---- and no control character got baked into the source ----
 // A shell heredoc collapses the escapes in the text it writes: `\b` becomes a

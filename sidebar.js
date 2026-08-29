@@ -555,7 +555,7 @@ function orphanRows(rows, now, minAge = ORPHAN_AGE) {
 // as the pane is wide. CPU comes off the tick counters node already keeps; VRAM
 // needs nvidia-smi, and its absence is a row that never appears.
 const GPU_TTL = 3000;
-const HIST = 240;
+const HIST = 600;
 const load = { cpu: [], ram: [], vram: [], gpu: null };
 let cpuAt = cpuTicks();
 
@@ -1053,8 +1053,10 @@ function bodyItems(st, base) {
 
 // One chart with three lines on it rather than three bars beside each other:
 // the same grid, the newest sample at the right edge, so a build that takes the
-// machine shows up as one shape instead of three. A cell is split in half, which
-// gives six rows twelve levels — enough to tell 40% from 45%.
+// machine shows up as one shape instead of three. A braille cell is a grid of
+// two dots by four, so eight rows of pane hold thirty-two levels and a row holds
+// two samples per column — fine enough to join the readings into a line.
+const DOT = [[1, 2, 4, 64], [8, 16, 32, 128]];
 const SERIES = [
   { key: 'cpu', label: 'CPU', colour: '33' },
   { key: 'ram', label: 'RAM', colour: '36' },
@@ -1062,24 +1064,30 @@ const SERIES = [
 ];
 
 function chart(h, n) {
-  const grid = Array.from({ length: h }, () => new Array(n).fill(null));
+  const cells = Array.from({ length: h }, () => new Array(n).fill(null));
+  const top = h * 4 - 1;
+  const put = (dx, dy, colour) => {
+    const row = cells[dy >> 2];
+    const cur = row[dx >> 1] || { bits: 0, colour };
+    cur.bits |= DOT[dx & 1][dy & 3];
+    row[dx >> 1] = cur;                       // the colour stays with whoever got here first
+  };
   for (const s of SERIES) {
-    const data = load[s.key].slice(-n);
-    const from = n - data.length;             // a short history starts mid-grid
+    const data = load[s.key].slice(-n * 2);
+    const from = n * 2 - data.length;         // a short history starts mid-grid
+    let prev = null;
     data.forEach((v, i) => {
-      const y = Math.max(0, Math.min(h * 2 - 1, Math.round(v * (h * 2 - 1))));
-      const ch = y % 2 ? '▀' : '▄';
-      const at = grid[h - 1 - (y >> 1)];
-      // Two lines in one cell: the cell fills, and the colour stays with
-      // whichever got there first, because a line that vanishes reads as a
-      // reading that vanished.
-      at[from + i] = at[from + i] ? { ch: at[from + i].ch === ch ? ch : '█', colour: at[from + i].colour } : { ch, colour: s.colour };
+      const y = Math.max(0, Math.min(top, Math.round((1 - v) * top)));
+      // Fill the gap the reading jumped, so the series reads as one line rather
+      // than as a scatter of the samples it happens to be made of.
+      for (let d = Math.min(y, prev == null ? y : prev); d <= Math.max(y, prev == null ? y : prev); d++) put(from + i, d, s.colour);
+      prev = y;
     });
   }
   const mid = h >> 1;
-  return grid.map((cells, r) => ({
+  return cells.map((row, r) => ({
     text: '  ' + dim(r === 0 ? '100' : r === h - 1 ? '  0' : '   ') + ' '
-      + cells.map((c, i) => (c ? sgr(c.colour, c.ch) : r === mid && i % 5 === 0 ? dim('·') : ' ')).join(''),
+      + row.map((c, i) => (c ? sgr(c.colour, String.fromCharCode(0x2800 + c.bits)) : r === mid && i % 5 === 0 ? dim('·') : ' ')).join(''),
   }));
 }
 
