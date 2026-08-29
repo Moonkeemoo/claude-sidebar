@@ -5,7 +5,8 @@ to your session and it shows, live, what that session is doing — the plan it i
 files it has touched, the links it produced, and the images you pasted in. Press `Tab` and it becomes
 a list of every Claude session on the machine; pick one and it opens in a new terminal tab, resumed.
 
-It follows whichever session took the last turn, so it keeps up when you move between windows.
+It latches onto the session in its own tab and stays there, so a pane open beside reef keeps showing
+reef however many other sessions take a turn meanwhile.
 
 Node only, no dependencies, one file. It reads transcripts and never writes to them.
 
@@ -44,8 +45,9 @@ The mark in front of a session is the useful part of that first block:
 | `○` | cold, nothing in the last three hours |
 
 `◐` is the one to look for. A session that reported and stopped will not restart on its own, and with
-several running in parallel that is the state easiest to lose track of. The session the pane is
-following is the one shown in cyan.
+several running in parallel that is the state easiest to lose track of. The session this pane is
+holding carries a `▸` and its name in cyan — worth a glance, because the pane deliberately stays on
+it while other rows move.
 
 `── ФАЙЛИ 25 1–4 ──` means the block holds 25 rows and is showing the first four of them — scroll it
 to see the rest. `FILES 16+` with a plus is a different thing: the count comes from the newest slice
@@ -69,8 +71,10 @@ view shows it for the session it is following, the list for the one under the hi
   reef-money.vercel.app
 ```
 
-Sessions are usually started in the directory that holds every repo, so the cwd names no project —
-the files a session touched do, and their first path segment under that directory is the repo. The
+Sessions are usually started in the directory that holds every repo and cd into the one they actually
+work in, so it is the newest cwd in the transcript that names the project and the first one that names
+nothing; from there the pane walks up to the nearest `.git`. A session that never moved out of the
+container is placed by the files it touched instead, by their first path segment under it. The
 deployments come from the repo's own markdown, one level down at most, plus any `*.vercel.app` the
 conversation itself mentioned; preview URLs are left out, they are dead within days and there are far
 more of them than real ones. The weight names a child directory only when that child is most of the
@@ -90,7 +94,7 @@ all. Windows only.
 ── ФАЙЛИ 25 1–4 ─────────────────────────────────────
   21:45 ×20 claude-sidebar/sidebar.js
   …
- ↑↓ вибір · клік або Enter відкриває · колесо гортає · Tab назад
+ ↑↓ вибір · клік перемикає панель · Enter відкриває табом · Tab назад
 ```
 
 The pane's own labels are Ukrainian.
@@ -140,8 +144,9 @@ node ~/Documents/GitHub/claude-sidebar/sidebar.js
 node $HOME\Documents\GitHub\claude-sidebar\sidebar.js
 ```
 
-With no argument it follows the live session. Give it a session id, or any unique prefix of one, and
-it pins to that session and stops following:
+With no argument it pins itself to the first session that takes a turn after it starts — the one in
+its own tab. Give it a session id, or any unique prefix of one, and it pins to that instead, before
+any turn is taken:
 
 ```bash
 node sidebar.js 9de93e09
@@ -155,6 +160,7 @@ node sidebar.js 9de93e09
 | `↑` `↓`, or `k` `j` | move the highlight; the blocks below follow it |
 | `g` / `G` | jump to the newest / oldest session |
 | `Enter` | open the highlighted session in a new terminal tab, resumed |
+| click on a row | move this pane onto that session and stay there |
 | `Esc` | leave the list, back to the live view |
 | `Q` | quit |
 | `Ctrl+C` | quit |
@@ -175,8 +181,9 @@ you pasted into it, and open it without leaving the pane.
 
 In the live view, **a click anywhere in the СЕСІЇ block opens the session list**, on the session you
 clicked. That includes its header and the line saying nothing has moved, so the block is one target
-however empty it is. In the list itself, **a click on a session row opens that session** — the same
-thing `Enter` does, without moving the highlight there first.
+however empty it is. In the list itself, **a click on a session row moves this pane onto that
+session** and closes the list — the pane then holds it the way it held the one before, until you
+pick another. Opening a session in a tab of its own is `Enter`.
 
 **The wheel scrolls whatever the pointer is over, and only that.** Put it on ФАЙЛИ and the file list
 moves while the session list above stays where it was; move to ЛІНКИ and that one moves instead. Each
@@ -192,8 +199,9 @@ how every mouse-aware terminal program behaves, not a quirk of this one.
 
 ## Opening a session in its own tab
 
-`Enter`, or a click on the row, opens the session in its own working directory running
-`claude --resume <id>`. You are back in that conversation with its history intact.
+`Enter` opens the session in its own working directory running `claude --resume <id>`. You are back
+in that conversation with its history intact. A click on the row does the other thing — it moves this
+pane onto that session without opening anything.
 
 In Warp that is a new tab, split the same way this one is, with a pane of this program beside it — so
 the resumed session comes with its own companion rather than sending you back here to change what this
@@ -357,13 +365,21 @@ That is the whole mechanism, and it is why this is a script you run rather than 
 somewhere. Ghostty's maintainers still label AppleScript a preview feature with breaking changes
 expected in 1.4, so of everything here this is the part most likely to want revisiting.
 
-## Following the live session
+## Which session a pane holds
 
-Left alone, the pane picks the transcript with the newest modification time and re-checks once a
-second. That is a guess, and it guesses wrong the moment a second session takes a turn in parallel.
+A pane holds one session. Which tab has the focus is not something a terminal will tell a program
+running inside it, so the pane infers it from when it started: it and its Claude open together, the
+tab config hands the focus to Claude, and the first turn taken after that is therefore this tab's.
+The pane pins to that session and stops looking. Two panes open at once end up on two different
+sessions, which is the whole point — before this they both read one machine-wide file and showed the
+same session in every tab.
 
-To make it exact, have your status line publish the session that just moved. Claude Code runs the
-status line command only for the session taking a turn, so what it writes is authoritative rather than
+Until that first turn the pane shows whatever moved last, so it has something to show rather than an
+empty frame. Type into another tab before your own and it pins there instead: press `Tab`, click the
+session you meant, and it re-pins to that one for good.
+
+Knowing which session took a turn needs a hand from your status line. Claude Code runs the status
+line command only for the session taking the turn, so what it writes is authoritative rather than
 inferred. Add this to your `statusline.js`, wherever it has already parsed its stdin JSON as `j`:
 
 ```js
@@ -382,8 +398,10 @@ try {
 } catch { /* the status line must render regardless */ }
 ```
 
-The pane reads that file, falls back to the mtime scan when it is missing, and ignores it entirely
-when you pinned a session with an argument. Nothing breaks if you skip this.
+Without that file the pane never gets its pairing signal and falls back to the transcript with the
+newest modification time, re-checked once a second — a guess that goes wrong the moment a second
+session takes a turn in parallel. It ignores the file entirely when you pinned a session with an
+argument. Nothing breaks if you skip this; clicking the session you want in the list still pins it.
 
 ## Test
 

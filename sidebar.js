@@ -63,7 +63,7 @@ function fromStatusline() {
   if (arg) return null;
   try {
     const a = JSON.parse(fs.readFileSync(ACTIVE, 'utf8'));
-    if (a.transcript_path && fs.existsSync(a.transcript_path)) return a.transcript_path;
+    if (a.transcript_path && fs.existsSync(a.transcript_path)) return a;
   } catch { }
   return null;
 }
@@ -71,7 +71,7 @@ function fromStatusline() {
 function findTranscript() {
   if (arg && arg.endsWith('.jsonl') && fs.existsSync(arg)) return arg;
   const live = fromStatusline();
-  if (live) return live;
+  if (live) return live.transcript_path;
   let best = null;
   let dirs; try { dirs = fs.readdirSync(PROJECTS, { withFileTypes: true }); } catch { return null; }
   for (const d of dirs) {
@@ -165,6 +165,18 @@ const TAIL = 3 * 1024 * 1024;   // newest slice only; see resetLive
 // ---- live session (incremental) ----
 const live = newState();
 let file = findTranscript();
+
+// One pane, one session. ACTIVE names whichever session took the last turn
+// anywhere on the machine, so every pane open at once shows the same one — in
+// the tab holding reef as much as in the tab holding this repo. Which tab has
+// focus is not something a terminal will tell us, but the pane and its Claude
+// open together and the tab config gives Claude the focus, so the first turn
+// taken after this pane came up is this tab's. Pin to that and stop reading
+// ACTIVE. A session id on the command line pins before the first turn.
+// ponytail: type into another tab first and the pane pins there instead —
+// Tab, then click the session you meant, and it re-pins.
+const BORN = Date.now();
+let pinned = arg ? file : null;
 let offset = file ? startOffset(file) : 0;
 let carry = '';
 live.partial = offset > 0;
@@ -267,7 +279,7 @@ function stateOf(s) {
 // out of the directory name, which mangles any project whose name holds a dash.
 const cwdCache = new Map();
 function projOf(s) {
-  if (!cwdCache.has(s.path)) cwdCache.set(s.path, path.basename(cwdOf(s)));
+  if (!cwdCache.has(s.path)) { const d = cwdOf(s); cwdCache.set(s.path, path.basename(gitUp(d) || d)); }
   return cwdCache.get(s.path);
 }
 
@@ -336,8 +348,22 @@ const PREVIEW = /-[a-z0-9]{9}-|-git-/;
 const DOC_LIMIT = 60;              // markdown files read per repo
 const projInfo = new Map();
 
+// The nearest repo at or above a directory, so a session sitting in `app/` or
+// `memory/` is still reported as working in the repo that holds it. Bounded by
+// the home directory: above it a stray .git would swallow every project at once.
+function gitUp(dir) {
+  for (let d = dir; d && d !== HOME;) {
+    if (fs.existsSync(path.join(d, '.git'))) return d;
+    const up = path.dirname(d);
+    if (up === d) return null;
+    d = up;
+  }
+  return null;
+}
+
 function repoOf(cwd, st) {
-  if (fs.existsSync(path.join(cwd, '.git'))) return cwd;
+  const own = gitUp(cwd);
+  if (own) return own;
   const count = new Map();
   for (const p of st.files.keys()) {
     const rel = path.relative(cwd, p);
@@ -680,11 +706,19 @@ function install(where, target) {
   }
 }
 
+// The newest cwd in a transcript, not the oldest. Every session here is started
+// in the directory that holds every repo and then cd's into the one it actually
+// works in, so the first entry names no project and the last one does. Reading
+// the head instead is how the panel came to report `GitHub, не git, >15.9G` for
+// whatever session was live.
 function cwdOf(s) {
   try {
-    for (const l of readSlice(s.path, 0, 65536).split('\n')) {
-      if (!l.trim()) continue;
-      const d = JSON.parse(l);
+    const size = fs.statSync(s.path).size;
+    const from = Math.max(0, size - 65536);
+    const lines = readSlice(s.path, from, Math.min(size, 65536)).split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].trim()) continue;
+      let d; try { d = JSON.parse(lines[i]); } catch { continue; }  // incl. the half-cut first line
       if (d.cwd && fs.existsSync(d.cwd)) return d.cwd;
     }
   } catch { }
@@ -725,7 +759,9 @@ function openInTab(s) {
     "id = 'sidebar'",
     "type = 'terminal'",
     `directory = '${__dirname}'`,
-    `commands = ['node ${path.basename(__filename)}']`,
+    // The id, so the new pane watches the session this tab was opened for
+    // rather than guessing from whoever takes the next turn.
+    `commands = ['node ${path.basename(__filename)} ${s.id}']`,
     '',
   ].join('\n');
   fs.mkdirSync(TABDIR, { recursive: true });
@@ -910,7 +946,10 @@ function activeRow(s, self) {
   const room = Math.max(10, Math.floor((W() - 12) * 0.5));
   const name = (s.title || projOf(s) || s.id.slice(0, 8)).slice(0, room).padEnd(room);
   const note = st.waiting ? sgr('33', 'чекає на тебе') : dim(st.tool || 'працює');
-  return ' ' + iconFor(s, st) + ' ' + dim(stamp) + '  ' + (self ? sgr('1;36', name) : name) + '  ' + note;
+  // The pane holds one session and no longer swaps to whoever moved last, so
+  // which row it is holding has to be readable at a glance, not inferred from
+  // a shade of the name.
+  return (self ? sgr('1;36', '▸') : ' ') + iconFor(s, st) + ' ' + dim(stamp) + '  ' + (self ? sgr('1;36', name) : name) + '  ' + note;
 }
 
 function pickRow(s, on) {
@@ -1058,8 +1097,8 @@ function renderPick() {
   paint(out, openError
     ? sgr('33', clip(' ' + openError, W()))
     : dim(GHOSTTY || WARP
-      ? ' ↑↓ вибір · клік або Enter відкриває · колесо гортає · Tab назад'
-      : ' ↑↓ вибір · цей термінал сесій не відкриває · колесо гортає · Tab назад'));
+      ? ' ↑↓ вибір · клік перемикає панель · Enter відкриває табом · Tab назад'
+      : ' ↑↓ вибір · клік перемикає панель · табів цей термінал не вміє · Tab назад'));
 }
 
 let mode = 'watch';
@@ -1114,8 +1153,18 @@ function onMouse(btn, y, press) {
   if (hit.pick) { openPicker(hit.pick); return true; }
   if (hit.session == null) return false;
   cursor = hit.session;
-  openInTab(sessions[cursor]);
+  pinTo(sessions[cursor]);
   return true;
+}
+
+// Clicking a session moves this pane onto it and leaves it there — Enter is what
+// opens a session in a tab of its own. Without the pin the next turn taken
+// anywhere would pull the pane straight back off what was just chosen.
+function pinTo(s) {
+  if (!s) return;
+  pinned = s.path;
+  if (s.path !== file) resetLive(s.path);
+  mode = 'watch';
 }
 
 // The wheel moves whatever the pointer is over, and only that. Over the picker's
@@ -1185,9 +1234,11 @@ if (process.stdin.isTTY) {
 
 setInterval(() => {
   if (mode === 'pick') return;
-  if (!arg) {
-    const latest = findTranscript();
-    if (latest && latest !== file) resetLive(latest);
+  if (!pinned) {
+    const a = fromStatusline();
+    if (a && a.ts >= BORN) pinned = a.transcript_path;
+    const next = pinned || findTranscript();
+    if (next && next !== file) resetLive(next);
   }
   if (readNew()) draw();
 }, 1000);

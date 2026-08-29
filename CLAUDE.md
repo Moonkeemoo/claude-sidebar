@@ -100,3 +100,9 @@ The pane runs from this repo; nothing is installed into `~/.claude`. The one opt
 the `.active-session.json` block inside the user's `statusline.js`, which lives in the separate
 `claude-config` repo — README explains the contract. Without it the pane falls back to an mtime scan
 and still works, so never assume the file exists.
+
+That file is also where the pairing comes from. A pane pins to the first session whose turn lands
+after the pane started, which is the session in its own tab, and never looks again — anything that
+puts it back on a machine-wide "newest session" puts every pane in every tab on the same one, which
+is the bug it was written to fix. `pinned` is the flag; `pinTo` is the only other way in, and the
+click on a session row is what fires it.
