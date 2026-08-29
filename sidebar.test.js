@@ -209,6 +209,33 @@ for (const i of rules.slice(1)) {
   assert.ok(watch.blocks[i - 1], 'the blank row on row ' + i + ' belongs to no block');
 }
 
+// ---- what a session spent, counted off the shapes a transcript really uses ----
+// A result is a string on some calls and a list of blocks on others; a call is
+// timed by the gap to the result carrying its id; and the context is the newest
+// prompt, not the sum of every prompt ever sent.
+const stat = eval('(function(){' + src.match(/function newStats[\s\S]*?\nfunction statLine[\s\S]*?\n\}/)[0] + '\nreturn { newStats, statLine } })()');
+const spent = stat.newStats();
+const when = (s) => new Date(Date.parse('2026-08-29T10:00:00Z') + s * 1000).toISOString();
+for (const [ts, message] of [
+  [when(0), { content: [{ type: 'tool_use', id: 'b1', name: 'Bash', input: {} }] }],
+  [when(90), { content: [{ type: 'tool_result', tool_use_id: 'b1', is_error: true, content: 'x'.repeat(400) }] }],
+  [when(95), { content: [{ type: 'tool_use', id: 'b2', name: 'Read', input: {} }] }],
+  [when(96), { content: [{ type: 'tool_result', tool_use_id: 'b2', content: [{ type: 'text', text: 'y'.repeat(800) }] }] }],
+  [when(97), { content: [{ type: 'tool_use', id: 'b3', name: 'Bash', input: {} }] }],
+  [when(98), { usage: { input_tokens: 5, cache_read_input_tokens: 300, cache_creation_input_tokens: 20, output_tokens: 70, output_tokens_details: { thinking_tokens: 40 } }, model: 'claude-opus-5', content: [] }],
+]) stat.statLine(spent, JSON.stringify({ type: 'assistant', timestamp: ts, message }));
+
+const bash = spent.tools.get('Bash');
+assert.strictEqual(bash.calls, 2, 'both Bash calls must be counted');
+assert.strictEqual(bash.ms, 90000, 'a call is timed from its own result, not the next message: ' + bash.ms);
+assert.strictEqual(bash.errors, 1, 'a failed result must be counted against the tool that failed');
+assert.strictEqual(bash.bytes, 400, 'a string result is measured whole');
+assert.strictEqual(spent.tools.get('Read').bytes, 800, 'a block result is measured through its text');
+assert.strictEqual(spent.open.size, 1, 'the call with no result yet is what "still running" is read from');
+assert.strictEqual(spent.ctx, 325, 'context is the newest prompt: fresh, cached and written');
+assert.deepStrictEqual([spent.out, spent.think, spent.turns], [70, 40, 1], 'output, thinking and turns come off usage');
+assert.strictEqual(spent.model, 'opus-5', 'the model name is shown without its vendor prefix');
+
 // ---- a dispatched agent is closed by its own result, not by the next one ----
 // The result arrives in a later message carrying only the id of the call it
 // answers, so matching it on anything else marks the wrong agent finished and

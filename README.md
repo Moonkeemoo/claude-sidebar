@@ -10,7 +10,7 @@ reef however many other sessions take a turn meanwhile.
 
 Node only, no dependencies, one file. It reads transcripts and never writes to them.
 
-## The two screens
+## The three screens
 
 **The live view** is what you get on start. It opens with every session that has moved in the last
 three hours, then what the machine is doing, then the plan, media, files and links of the session it
@@ -117,6 +117,42 @@ line of its own.
 has come back, and how long it has been out. `▸` is still running, `✓` came back and the time beside
 it is how long it took. A session waiting on three agents shows nothing about them in its own last
 line, which is exactly when you want to know.
+
+**The spend screen** opens on `A`, and answers where a session's tokens and minutes went.
+
+```
+── ВИТРАТИ · Сайдбар ──────────────────────────
+  контекст   401k  токенів у промті останнього ходу
+  кеш        99% зчитано  756k записано в кеш
+  вихід      442k  думання 238k  ·  ходів 431
+  час        1 год 52 хв  транскрипт 4M  ·  opus-5
+  ⏱ Bash висить 6 хв
+
+── ІНСТРУМЕНТИ ─────────────────────────────
+                     виклики   вихід     час   збої
+  Bash                   163     34k   11 хв      6
+  Edit                    88      4k    1 хв      2
+  WebSearch                2      1k    14 с      ·
+```
+
+Four numbers say most of it. **Контекст** is the prompt of the newest turn — everything the model was
+handed on that one call, which is what fills up and what a compaction resets. **Кеш** is the share of
+those tokens that came out of the prompt cache rather than being written into it; a session sitting at
+99% is being extended, one that keeps dropping to the fifties is having its prefix rebuilt, which is
+where money goes without anything looking wrong. **Думання** is how much of the output was reasoning
+rather than answer. And a `⏱` row appears for a call that was dispatched and never came back — the
+difference between a session working and a session hung.
+
+The tool table is ranked by what came back, not by how often it was called: a tool used twice that
+returns a megabyte each time is the leak, and every list sorted by call count buries it under
+something called three hundred times. **Вихід** is the result size in tokens, four characters to one,
+near enough to rank on. **Час** is wall clock spent inside that tool, which is where a session's hours
+actually go. **Збої** counts results that came back as errors; a tool with a high count there is a
+retry loop nobody noticed.
+
+Reading it costs a pass over the whole transcript, which for a hundred-megabyte file is about six
+hundred milliseconds — taken eight megabytes at a time so the pane keeps painting, and only while this
+screen is open.
 
 **The session list** opens on `Tab`. Every Claude session on the machine, newest first, titled by what
 the session was actually about. Move the highlight and the blocks below it switch to that session's
@@ -308,6 +344,7 @@ node sidebar.js 9de93e09
 |---|---|
 | `Tab` or `S` | open the session list, and press it again to close it |
 | `V` | switch how ЗАЛІЗО draws the load — lines, braille, heat, dense heat |
+| `A` | the spend screen — context, cache, and where the tokens and minutes went; again to leave |
 | `↑` `↓`, or `k` `j` | move the highlight; the blocks below follow it |
 | `g` / `G` | jump to the newest / oldest session |
 | `Enter` | open the highlighted session in a new terminal tab, resumed |
@@ -317,7 +354,7 @@ node sidebar.js 9de93e09
 | `Ctrl+C` | quit |
 
 `Tab` and the arrow keys work in any keyboard layout, and so do the letters — the pane accepts them in
-their Ukrainian and Russian positions too (`і`/`ы` for `S`, `й` for `Q`, `м` for `V`, `л` and `о` for `k` and `j`).
+their Ukrainian and Russian positions too (`і`/`ы` for `S`, `й` for `Q`, `м` for `V`, `ф` for `A`, `л` and `о` for `k` and `j`).
 You never have to switch layouts to drive it. `g` and `G` are the exception, Latin only.
 
 ### Mouse

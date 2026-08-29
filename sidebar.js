@@ -43,6 +43,7 @@ const strip = (s) => s.replace(/\x1b\[[\d;]*m/g, '');
 const K_LIST = new Set(['s', 'S', 'і', 'І', 'ы', 'Ы', '\t']);
 const K_QUIT = new Set(['q', 'Q', 'й', 'Й']);
 const K_VIEW = new Set(['v', 'V', 'м', 'М']);
+const K_STATS = new Set(['a', 'A', 'ф', 'Ф']);
 const K_UP = new Set(['\u001b[A', 'k', 'л', 'Л']);
 const K_DOWN = new Set(['\u001b[B', 'j', 'о', 'О']);
 
@@ -1118,6 +1119,92 @@ function fireURI(uri) {
   child.unref();
 }
 
+// ---- what a session spent ----
+// Every other reader here takes the newest slice of a transcript. This one takes
+// all of it, because the question — where did the tokens and the minutes go — is
+// answered across the whole file. A hundred megabytes is six hundred
+// milliseconds of parsing, and six hundred milliseconds of parsing on this
+// thread is six hundred milliseconds of frozen pane, so it goes eight megabytes
+// at a time and yields in between. It runs only while the screen showing it is
+// open.
+const STAT_TTL = 30 * 1000;
+const STAT_CHUNK = 8 * 1024 * 1024;
+
+function newStats() {
+  return { turns: 0, out: 0, think: 0, read: 0, wrote: 0, ctx: 0, model: '', bytes: 0, from: 0, to: 0, tools: new Map(), open: new Map() };
+}
+
+function toolOf(s, name) {
+  let e = s.tools.get(name);
+  if (!e) s.tools.set(name, (e = { name, calls: 0, bytes: 0, ms: 0, errors: 0 }));
+  return e;
+}
+
+// A tool result is a string on some calls and a list of blocks on others, and
+// its length is the closest thing to what it cost: four characters to the token,
+// near enough to rank on.
+function resultSize(c) {
+  if (typeof c === 'string') return c.length;
+  if (!Array.isArray(c)) return 0;
+  let n = 0;
+  for (const b of c) n += b && typeof b.text === 'string' ? b.text.length : 0;
+  return n;
+}
+
+function statLine(s, line) {
+  let d; try { d = JSON.parse(line); } catch { return; }
+  const t = Date.parse(d.timestamp || '') || 0;
+  if (t) { s.from = s.from ? Math.min(s.from, t) : t; s.to = Math.max(s.to, t); }
+  const m = d.message || {};
+  const u = m.usage;
+  if (u) {
+    s.turns++;
+    s.out += u.output_tokens || 0;
+    s.think += (u.output_tokens_details || {}).thinking_tokens || 0;
+    s.read += u.cache_read_input_tokens || 0;
+    s.wrote += u.cache_creation_input_tokens || 0;
+    // The newest turn's prompt is the context as it stands: what was sent fresh,
+    // what came from cache, and what was written into it.
+    s.ctx = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+    if (m.model) s.model = String(m.model).replace(/^claude-/, '');
+  }
+  if (!Array.isArray(m.content)) return;
+  for (const b of m.content) {
+    if (!b || typeof b !== 'object') continue;
+    if (b.type === 'tool_use') {
+      toolOf(s, b.name || '?').calls++;
+      if (b.id) s.open.set(b.id, { name: b.name || '?', at: t });
+    } else if (b.type === 'tool_result') {
+      const was = s.open.get(b.tool_use_id);
+      const e = toolOf(s, was ? was.name : '?');
+      if (was) {
+        if (t && was.at) e.ms += Math.max(0, t - was.at);
+        s.open.delete(b.tool_use_id);
+      }
+      e.bytes += resultSize(b.content);
+      if (b.is_error) e.errors++;
+    }
+  }
+}
+
+async function statsOf(file) {
+  let size; try { size = fs.statSync(file).size; } catch { return null; }
+  const s = newStats();
+  let off = 0;
+  let carry = '';
+  while (off < size) {
+    const len = Math.min(STAT_CHUNK, size - off);
+    const chunk = carry + readSlice(file, off, len);
+    off += len;
+    const lines = chunk.split('\n');
+    carry = off < size ? lines.pop() || '' : '';
+    for (const l of lines) if (l.trim()) statLine(s, l);
+    await new Promise((r) => setImmediate(r));
+  }
+  s.bytes = size;
+  return s;
+}
+
 // ---- rendering ----
 // COLUMNS and LINES are the fallback when stdout is not a terminal, which is how
 // the layout gets measured at sizes nobody has a window for.
@@ -1656,7 +1743,70 @@ function renderWatch() {
     ...bodyBlocks(live, live.cwd),
   ], H() - 2);
 
-  paint(out, dim(' Tab — список · v — вид графіка · клік відкриває · колесо гортає · q — вихід'));
+  paint(out, dim(' Tab — список · a — витрати · v — вид графіка · клік відкриває · q — вихід'));
+}
+
+// A count as a person reads it: thousands and millions, two significant figures
+// where it matters and none where it does not.
+const num = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1000 ? Math.round(n / 1000) + 'k' : String(Math.round(n)));
+
+function span(ms) {
+  const m = Math.floor(ms / 60000);
+  if (m < 60) return m + ' хв';
+  return Math.floor(m / 60) + ' год ' + (m % 60) + ' хв';
+}
+
+// What the session has spent, and what it is still waiting on. The cache share
+// is the one number that says whether the prompt is being rebuilt from scratch:
+// tokens read out of cache cost a tenth of tokens written into it.
+function spentRows(s) {
+  const cached = s.read + s.wrote;
+  const stuck = [...s.open.values()].filter((o) => o.at && Date.now() - o.at > 60000)
+    .sort((a, b) => a.at - b.at);
+  return [
+    { text: '  ' + dim(cell('контекст', 11)) + sgr('1', num(s.ctx)) + dim('  токенів у промті останнього ходу') },
+    { text: '  ' + dim(cell('кеш', 11)) + (cached ? Math.round(s.read / cached * 100) + '% зчитано' : '—')
+      + dim('  ' + num(s.wrote) + ' записано в кеш') },
+    { text: '  ' + dim(cell('вихід', 11)) + num(s.out) + dim('  думання ' + num(s.think) + '  ·  ходів ' + s.turns) },
+    { text: '  ' + dim(cell('час', 11)) + (s.to > s.from ? span(s.to - s.from) : '—')
+      + dim('  транскрипт ' + weigh(s.bytes) + (s.model ? '  ·  ' + s.model : '')) },
+    ...stuck.slice(0, 3).map((o) => ({
+      text: '  ' + sgr('33', '⏱ ' + o.name + ' висить ' + span(Date.now() - o.at)),
+    })),
+  ];
+}
+
+// Ranked by what came back, not by how often it was called: a tool used twice
+// that returns a megabyte each time is the leak, and it sits below a tool called
+// three hundred times in every list sorted the other way.
+function toolRows(s) {
+  const rows = [...s.tools.values()].sort((a, b) => b.bytes - a.bytes).slice(0, 8);
+  return [
+    { text: dim('  ' + cell('', 18) + cell('виклики', 8, true) + cell('вихід', 8, true) + cell('час', 8, true) + cell('збої', 7, true)) },
+    ...rows.map((e) => ({
+      text: '  ' + cell(clip(e.name, 18), 18) + cell(e.calls, 8, true) + cell(num(e.bytes / 4), 8, true)
+        + cell(e.ms > 60000 ? span(e.ms) : Math.round(e.ms / 1000) + ' с', 8, true)
+        + (e.errors ? sgr('33', cell(e.errors, 7, true)) : dim(cell('·', 7, true))),
+    })),
+  ];
+}
+
+function renderStats() {
+  const out = [];
+  rowHits = {}; blockAt = {};
+  const s = slow('stats:' + file, STAT_TTL, () => statsOf(file));
+  // titleOf reads from both ends of the file, so it needs the size to find them.
+  let bytes = 0; try { bytes = fs.statSync(file).size; } catch { }
+  const title = (bytes && titleOf(file, bytes)) || path.basename(file, '.jsonl').slice(0, 8);
+  if (!s) {
+    layout(out, [{ key: 'ВИТРАТИ', label: 'ВИТРАТИ', items: [], count: '', empty: 'рахую транскрипт…' }], H() - 2);
+  } else {
+    layout(out, [
+      { key: 'ВИТРАТИ', label: clip('ВИТРАТИ · ' + title, 40), items: spentRows(s), count: '' },
+      { key: 'ІНСТРУМЕНТИ', label: 'ІНСТРУМЕНТИ', items: toolRows(s), count: '' },
+    ], H() - 2);
+  }
+  paint(out, dim(' a — назад · Tab — список · q — вихід'));
 }
 
 function renderPick() {
@@ -1694,7 +1844,7 @@ let cursor = 0;
 // painted — so a layout that shifts under a resting pointer cannot strand a
 // highlight on a row that no longer opens anything.
 let hover = -1;
-const draw = () => (mode === 'pick' ? renderPick() : renderWatch());
+const draw = () => (mode === 'pick' ? renderPick() : mode === 'stats' ? renderStats() : renderWatch());
 
 // Every mouse event resolves through rowHits: motion moves the highlight, a
 // click on a link or a media row opens that, a click on a session row opens the
@@ -1787,6 +1937,7 @@ readNew();
 sampleLoad();                               // so the first frame already knows what the machine is doing
 if (process.env.SIDEBAR_ONCE) {
   if (process.env.SIDEBAR_ONCE === 'pick') { sessions = listSessions(); mode = 'pick'; }
+  if (process.env.SIDEBAR_ONCE === 'stats') mode = 'stats';
   draw(); showCursor(); process.exit(0);
 }
 draw();
@@ -1806,6 +1957,13 @@ if (process.stdin.isTTY) {
     if (mode === 'watch') {
       if (K_LIST.has(k)) { openPicker(); draw(); }
       else if (K_VIEW.has(k)) { chartMode = (chartMode + 1) % CHART_MODES.length; draw(); }
+      else if (K_STATS.has(k)) { mode = 'stats'; draw(); }
+      else if (K_QUIT.has(k)) bye();
+      return;
+    }
+    if (mode === 'stats') {
+      if (K_LIST.has(k)) { openPicker(); draw(); }
+      else if (K_STATS.has(k) || k === '\u001b') { mode = 'watch'; draw(); }
       else if (K_QUIT.has(k)) bye();
       return;
     }
