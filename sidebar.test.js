@@ -171,6 +171,25 @@ assert.strictEqual(stranded[0].bytes, 700 * 1048576, 'memory is the sum of the s
 assert.strictEqual(stranded[0].born, NOW - 45 * 60000, 'the age shown is the oldest of them');
 assert.deepStrictEqual(orphanRows([], NOW, 1), [], 'nothing running means no block');
 
+// ---- a deployment is what the docs say, not what they illustrate ----
+// A fenced block shows some other pane, terminal or project. Our own README
+// prints an example frame carrying reef's host, and until the fence was skipped
+// every session working in this repo was reported as deployed there.
+const vercelInDocs = eval('(function(){' + src.match(/const VERCEL = [\s\S]*?\nfunction vercelInDocs[\s\S]*?\n\}/)[0] + '\nreturn vercelInDocs })()');
+const docs = fs.mkdtempSync(path.join(os.tmpdir(), 'sidebar-docs-'));
+fs.writeFileSync(path.join(docs, 'README.md'), [
+  'прод live-app.vercel.app, там усе',
+  '',
+  '```',
+  '  other-app.vercel.app',
+  '```',
+  '',
+  'ще один рядок',
+].join('\n'));
+assert.deepStrictEqual(vercelInDocs(docs), ['live-app.vercel.app'], 'the host inside the fence is not this repo`s');
+assert.ok(!vercelInDocs(__dirname).includes('reef-money.vercel.app'), 'our own README example is being read as our deployment');
+fs.rmSync(docs, { recursive: true, force: true });
+
 // ---- and no control character got baked into the source ----
 // A shell heredoc collapses the escapes in the text it writes: `\b` becomes a
 // backspace byte and `\x1b` an escape. The file still parses, and a regex like

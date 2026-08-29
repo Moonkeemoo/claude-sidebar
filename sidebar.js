@@ -345,6 +345,11 @@ const VERCEL_ONE = /\b([a-z0-9][a-z0-9-]*\.vercel\.app)\b/i;
 // outnumber the real hosts and are dead within days. The address you lose and
 // go looking for is the one you would send someone.
 const PREVIEW = /-[a-z0-9]{9}-|-git-/;
+// A fenced block is a picture of something else — a pane, a terminal, another
+// project's README — and an address inside it is that picture's, not this
+// repo's. The example frame in our own README is why every session working in
+// this repo was reported as deployed to reef.
+const FENCE = /^ {0,3}(`{3,}|~{3,})[\s\S]*?(?:^ {0,3}\1|$(?![\s\S]))/gm;
 const DOC_LIMIT = 60;              // markdown files read per repo
 const projInfo = new Map();
 
@@ -400,6 +405,7 @@ function vercelInDocs(dir) {
       if (!e.name.endsWith('.md')) continue;
       budget--;
       let text; try { text = fs.readFileSync(path.join(d, e.name), 'utf8'); } catch { continue; }
+      text = text.replace(FENCE, '');
       let m; VERCEL.lastIndex = 0;
       while ((m = VERCEL.exec(text))) { const h = m[1].toLowerCase(); if (!PREVIEW.test(h)) hosts.add(h); }
     }

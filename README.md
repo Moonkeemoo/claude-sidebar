@@ -77,7 +77,9 @@ nothing; from there the pane walks up to the nearest `.git`. A session that neve
 container is placed by the files it touched instead, by their first path segment under it. The
 deployments come from the repo's own markdown, one level down at most, plus any `*.vercel.app` the
 conversation itself mentioned; preview URLs are left out, they are dead within days and there are far
-more of them than real ones. The weight names a child directory only when that child is most of the
+more of them than real ones. An address inside a fenced block does not count: the frame above is a
+picture of another project's pane, and while it counted, every session working in this repo was
+reported as deployed to reef. The weight names a child directory only when that child is most of the
 answer, which is the only case you can act on.
 
 СИРОТИ appears in the live view when a test run walked away from a headless browser. Nothing else
