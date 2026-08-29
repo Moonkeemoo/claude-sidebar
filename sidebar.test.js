@@ -258,6 +258,28 @@ assert.strictEqual(spent.ctx, 325, 'context is the newest prompt: fresh, cached 
 assert.deepStrictEqual([spent.out, spent.think, spent.turns], [70, 40, 1], 'output, thinking and turns come off usage');
 assert.strictEqual(spent.model, 'opus-5', 'the model name is shown without its vendor prefix');
 
+// ---- failures are sorted by what they are, not by which tool reported them ----
+// Every pattern here was read out of a real transcript. The specific ones have
+// to win over the general: an Edit that lost its anchor also contains the word
+// "error", and reporting it as "інше" answers nothing.
+eval(src.match(/const ERRORS = \[[\s\S]*?\nfunction classify[\s\S]*?\n\}/)[0]);
+assert.strictEqual(classify('<tool_use_error>String to replace not found in file.'), 'якір Edit не знайдено');
+assert.strictEqual(classify('File has been modified since read, either by the user or by a linter'), 'файл змінився після читання');
+assert.strictEqual(classify("sed: can't read app/index.html: No such file or directory"), 'нема файла або шляху');
+assert.strictEqual(classify('/usr/bin/bash: -c: line 77: unexpected EOF while looking for matching'), 'синтаксис у команді');
+assert.strictEqual(classify('Traceback (most recent call last): File "<stdin>"'), 'виняток у скрипті');
+assert.strictEqual(classify('Blocked: sleep 45 followed by: tail'), 'заблоковано');
+assert.strictEqual(classify('Exit code 1'), 'інше', 'an exit code on its own says nothing about what went wrong');
+
+// ---- the bill is counted in the units every model is priced in ----
+// A cached prompt token is a tenth of a fresh one, a cache write a quarter more,
+// output five times. Get the ratios wrong and the block says the wrong thing is
+// expensive, which is the only thing it exists to say.
+const price = eval('(function(){' + src.match(/const RATE = [\s\S]*?\nfunction priceOf[\s\S]*?\n\}/)[0] + '\nreturn priceOf })()');
+const bill = price({ read: 1000, out: 100, wrote: 100, input: 0 });
+assert.strictEqual(bill.total, 100 + 500 + 125, 'read×0.1 + out×5 + wrote×1.25: ' + JSON.stringify(bill));
+assert.strictEqual(bill.parts[0].v, 100, 'a thousand tokens re-read out of cache cost a hundred fresh ones');
+
 // ---- a session with an agent out is working, not waiting on its human ----
 // The turn that dispatched an agent ends; the agent keeps going. Reading only
 // the newest assistant record calls that "чекає на тебе", which is the one lie

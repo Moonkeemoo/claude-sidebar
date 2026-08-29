@@ -1161,7 +1161,7 @@ function newStats() {
     // Per turn, so the screen can draw the session rather than sum it: where the
     // context grew and where it was cut back, and when the work actually
     // happened as against when the session was open.
-    marks: [], rounds: [], base: 0, toolChars: 0,
+    marks: [], rounds: [], base: 0, toolChars: 0, errs: new Map(), reads: new Map(),
   };
 }
 
@@ -1198,6 +1198,27 @@ function toolOf(s, name) {
   let e = s.tools.get(name);
   if (!e) s.tools.set(name, (e = { name, calls: 0, bytes: 0, ms: 0, errors: 0 }));
   return e;
+}
+
+// What went wrong, in the words the tools actually use. Every pattern here was
+// read out of transcripts on this machine rather than imagined: the anchor drift
+// that Edit reports, the stale-read guard, the shell quoting that dies on an
+// unexpected EOF, and the exceptions a script throws back through Bash. The
+// order matters — the first match wins, and the specific ones come first.
+const ERRORS = [
+  ['якір Edit не знайдено', /String to replace not found|old_string/i],
+  ['файл змінився після читання', /has been modified since|has not been read yet/i],
+  ['нема файла або шляху', /No such file|cannot find|ENOENT|does not exist/i],
+  ['синтаксис у команді', /unexpected EOF|syntax error|unexpected token|parse error/i],
+  ['виняток у скрипті', /Traceback|node:internal|SyntaxError|ReferenceError|TypeError|AssertionError/i],
+  ['заблоковано', /Blocked:|permission denied|EACCES|not permitted|refused/i],
+  ['відмова людини', /want to proceed|user rejected|declined/i],
+  ['таймаут', /timed out|ETIMEDOUT|timeout/i],
+];
+
+function classify(text) {
+  for (const [name, re] of ERRORS) if (re.test(text)) return name;
+  return 'інше';
 }
 
 // A tool result is a string on some calls and a list of blocks on others, and
@@ -1250,7 +1271,7 @@ function statLine(s, line) {
     if (!b || typeof b !== 'object') continue;
     if (b.type === 'tool_use') {
       toolOf(s, b.name || '?').calls++;
-      if (b.id) s.open.set(b.id, { name: b.name || '?', at: t, brief: briefOf(b.name || '', b.input || {}) });
+      if (b.id) s.open.set(b.id, { name: b.name || '?', at: t, brief: briefOf(b.name || '', b.input || {}), file: (b.input || {}).file_path || '' });
     } else if (b.type === 'tool_result') {
       const was = s.open.get(b.tool_use_id);
       const e = toolOf(s, was ? was.name : '?');
@@ -1266,6 +1287,24 @@ function statLine(s, line) {
       if (b.is_error) {
         e.errors++;
         if (s.marks.length) s.marks[s.marks.length - 1].err++;
+        const text = typeof b.content === 'string' ? b.content
+          : Array.isArray(b.content) ? b.content.map((x) => (x && x.text) || '').join(' ') : '';
+        const kind = classify(text);
+        const cur = s.errs.get(kind) || { kind, n: 0, tool: '', sample: '' };
+        cur.n++;
+        cur.tool = was ? was.name : cur.tool;
+        // The first line of the first one is enough to recognise it; the rest is
+        // a stack trace, and a stack trace in a pane is a wall.
+        if (!cur.sample) cur.sample = text.replace(/\s+/g, ' ').replace(/^<tool_use_error>/, '').trim().slice(0, 160);
+        s.errs.set(kind, cur);
+      }
+      // The same file read twice is the same tokens paid for twice. It is the
+      // cheapest waste there is to see and the easiest to miss.
+      if (was && was.file && /^(Read|NotebookRead)$/.test(was.name)) {
+        const r = s.reads.get(was.file) || { n: 0, bytes: 0 };
+        r.n++;
+        r.bytes += bytes;
+        s.reads.set(was.file, r);
       }
     }
   }
@@ -1960,6 +1999,89 @@ function bandRows(s, n) {
 
 const ASK_N = 6;                   // rounds shown
 
+// Errors by what they are rather than by which tool reported them: six failed
+// Bash calls say nothing, while four of them being the same missing path says
+// where the session was going wrong. The bar is the share of all failures, so
+// one dominant kind is visible without reading the numbers.
+function errRows(s) {
+  const all = [...s.errs.values()].sort((a, b) => b.n - a.n);
+  const total = all.reduce((a, e) => a + e.n, 0) || 1;
+  const room = Math.max(12, W() - 52);
+  return all.slice(0, 5).map((e) => {
+    const on = Math.round(e.n / total * 10);
+    return {
+      text: '  ' + cell(clip(e.kind, 26), 26) + cell(e.n, 4, true) + '  '
+        + sgr('33', '█'.repeat(on)) + dim('░'.repeat(10 - on)) + '  ' + dim(clip(e.sample || e.tool, room)),
+    };
+  });
+}
+
+// What a session actually costs, in one unit. A cached prompt token is a tenth
+// of a fresh one, writing into the cache is a quarter more than sending it, and
+// output is five times input — the ratios every Claude model is priced on. Add
+// them up in input-token equivalents and the shape of the bill appears, which is
+// rarely the shape anyone expects: on a long session it is almost entirely the
+// prompt being re-read on every single turn.
+const RATE = { read: 0.1, wrote: 1.25, input: 1, out: 5 };
+
+function priceOf(s) {
+  const parts = [
+    { label: 'кеш перечитано', v: s.read * RATE.read, colour: '36' },
+    { label: 'вихід і думання', v: s.out * RATE.out, colour: '33' },
+    { label: 'запис у кеш', v: s.wrote * RATE.wrote, colour: '35' },
+  ];
+  return { parts, total: parts.reduce((a, p) => a + p.v, 0) };
+}
+
+// The same file, read again, and every call that failed: two things paid for
+// that bought nothing. Neither is the big number on a long session, and both are
+// the only ones a person can simply stop doing.
+function wasteOf(s) {
+  let files = 0;
+  let reread = 0;
+  for (const [, r] of s.reads) {
+    if (r.n < 2) continue;
+    files++;
+    reread += r.bytes * (r.n - 1) / r.n / 4;
+  }
+  const fails = [...s.tools.values()].reduce((a, e) => a + e.errors, 0);
+  return { files, reread, fails };
+}
+
+function priceRows(s) {
+  const { parts, total } = priceOf(s);
+  const w = Math.max(8, Math.min(20, W() - 54));
+  const first = s.marks[0];
+  const last = s.marks[s.marks.length - 1];
+  const waste = wasteOf(s);
+  const rows = [
+    { text: '  ' + dim(cell('разом', 17)) + sgr('1', cell(num(total), 6, true)) + dim('  еквівалентних токенів входу') },
+    ...parts.map((p) => ({
+      text: '  ' + dim(cell(p.label, 17)) + cell(num(p.v), 6, true) + '  '
+        + sgr(p.colour, '█'.repeat(Math.round(p.v / (total || 1) * w)))
+        + dim('░'.repeat(Math.max(0, w - Math.round(p.v / (total || 1) * w))))
+        + dim('  ' + Math.round(p.v / (total || 1) * 100) + '%'),
+    })),
+  ];
+  // The cost of one more turn is the context times the cache rate, and it is the
+  // number that decides whether to carry on here or start again: it grows with
+  // every turn whether or not the turn was useful.
+  if (first && last && first.ctx) {
+    rows.push({
+      text: '  ' + dim(cell('один хід', 17)) + cell(num(last.ctx * RATE.read), 6, true)
+        + dim('  на початку ' + num(first.ctx * RATE.read) + '  ·  дорожче в '
+          + (last.ctx / first.ctx).toFixed(1).replace('.0', '') + ' раза'),
+    });
+  }
+  if (waste.files || waste.fails) {
+    const bits = [];
+    if (waste.files) bits.push(plural(waste.files, 'файл', 'файли', 'файлів') + ' перечитано, ~' + num(waste.reread));
+    if (waste.fails) bits.push(plural(waste.fails, 'виклик', 'виклики', 'викликів') + ' впало намарно');
+    rows.push({ text: '  ' + dim(cell('намарно', 17)) + dim(bits.join('  ·  ')) });
+  }
+  return rows;
+}
+
 // What the window is made of, as far as a transcript can say. The base is
 // measured, not guessed: it is the prompt of the first turn, before anything had
 // been said. The rest is the conversation, and the share of it that came back
@@ -2019,7 +2141,9 @@ function renderStats() {
         { key: 'КОНТЕКСТ', label: 'КОНТЕКСТ', items: ctxRows(s, h, n), count: '' },
         { key: 'ПЕРЕБІГ', label: 'ПЕРЕБІГ', items: bandRows(s, n), count: '' },
       ] : []),
+      ...(s.turns ? [{ key: 'ЦІНА', label: 'ЦІНА', items: priceRows(s), count: '' }] : []),
       ...(s.base ? [{ key: 'СКЛАД', label: 'СКЛАД КОНТЕКСТУ', items: makeupRows(s), count: '' }] : []),
+      ...(s.errs.size ? [{ key: 'ЗБОЇ', label: 'ЗБОЇ', items: errRows(s), count: '' }] : []),
       ...(s.rounds.length ? [{ key: 'ЗАПИТИ', label: 'НАЙДОРОЖЧІ ЗАПИТИ', items: askRows(s), count: '' }] : []),
       { key: 'ІНСТРУМЕНТИ', label: 'ІНСТРУМЕНТИ', items: toolRows(s), count: '' },
     ], H() - 2);

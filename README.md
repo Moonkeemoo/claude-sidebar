@@ -147,21 +147,28 @@ line, which is exactly when you want to know.
   Edit                    98      4k    1 хв      2
   WebSearch                2      1k    14 с      ·
 
+── ЦІНА ───────────────────────────────────
+  разом             18.7M  еквівалентних токенів входу
+  кеш перечитано    14.8M  ████████████████░░░░  79%
+  вихід і думання    2.8M  ███░░░░░░░░░░░░░░░░░  15%
+  запис у кеш        1.1M  █░░░░░░░░░░░░░░░░░░░  6%
+  один хід            50k  на початку 6k  ·  дорожче в 7.7 раза
+  намарно          10 викликів впало намарно
+
 ── СКЛАД КОНТЕКСТУ ──────────────────────
   база          65k  ███░░░░░░░░░  системний промт, інструменти, пам'ять
-  розмова      412k  ██████████░░  за 19 запитів
-  з неї         49k  ██░░░░░░░░░░  відповіді інструментів, приблизно
+  розмова      433k  ██████████░░  за 20 запитів
+  з неї         51k  ██░░░░░░░░░░  відповіді інструментів, приблизно
+
+── ЗБОЇ ──────────────────────────────────
+  виняток у скрипті   4  ████░░░░░░  SyntaxWarning: invalid escape sequence…
+  якір Edit не знайдено  2  ██░░░░░░░░  String to replace not found in file…
+  синтаксис у команді   1  █░░░░░░░░░  unexpected EOF while looking for matching…
 
 ── НАЙДОРОЖЧІ ЗАПИТИ ──────────────────
   10:40   170k 63 х   14 хв  думаю що ще корисного додати
   09:28   119k 54 х    6 хв  ось тут відображаються всі файли — мене ціка…
-  09:50   115k 39 х    6 хв  доречі додаткова задача — по репозиторію…
   медіана запиту 92k токенів  ·  87k у середньому
-
-── ІНСТРУМЕНТИ ─────────────────────────────
-                     виклики   вихід     час   збої
-  Bash                   194     39k   13 хв      8
-  Edit                   104      5k    1 хв      2
 ```
 
 Four numbers say most of it. **Контекст** is the prompt of the newest turn — everything the model was
@@ -186,6 +193,19 @@ to the right is a session carrying everything it has ever read; a cliff is a com
 the same span underneath as two bands — what was generated, and where results came back as errors —
 cut into as many slices as the pane is wide, so an hour of nothing looks like an hour of nothing. A
 bright patch in the lower band is a retry loop, sitting directly under the minutes that produced it.
+
+ЦІНА is the bill, in one unit. A prompt token read out of cache costs a tenth of a fresh one, a token
+written into the cache a quarter more, and output five times input — the ratios every Claude model is
+priced on — so adding them up in input-token equivalents shows the shape of what was spent. On a long
+session that shape surprises people: four fifths of it is the same prompt being re-read on every
+single turn, and none of it is the answers. That is what the ОДИН ХІД line is for — the context times
+the cache rate, which is what the next turn will cost before it does anything. Seven times what it
+cost at the start is not a session going wrong; it is a session that should have been two.
+
+ЗБОЇ sorts failures by what they are rather than by which tool reported them. Six failed Bash calls
+say nothing; four of them being the same missing path says where the session was going wrong, and an
+Edit that lost its anchor twice says the file moved under it. Every pattern was read out of real
+transcripts on this machine.
 
 СКЛАД КОНТЕКСТУ is as far as a transcript can answer what the window is made of. The base is
 measured rather than guessed: it is the prompt of the very first turn, before anything had been
