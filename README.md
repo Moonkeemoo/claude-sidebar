@@ -22,7 +22,7 @@ is following:
  ◐  2 хв  Reef сессія - варп   чекає на тебе
  ◑ 1 год  Пошук інструменту    Edit sidebar.js
 
-── ЗАЛІЗО ───────────────────────────────────────────
+── ЗАЛІЗО лінії ─────────────────────────────────────────
   CPU 31%  ·  RAM 56% 17.9G/31.9G  ·  VRAM 24% 3.8G
   100┤
      │              ╭─╮
@@ -47,7 +47,7 @@ is following:
 ── ЛІНКИ 17 ─────────────────────────────────────────
   https://docs.warp.dev/terminal/windows/tab-configs/
 
- Tab — список · клік відкриває · колесо гортає блок · q — вихід
+ Tab — список · v — вид графіка · клік відкриває · колесо гортає · q — вихід
 ```
 
 The mark in front of a session is the useful part of that first block:
@@ -85,6 +85,14 @@ being read. VRAM comes from `nvidia-smi`; where that is not on PATH the line and
 absent. Under about two dozen rows the pane keeps the numbers and drops the chart, which would be
 squeezed into its own empty ceiling.
 
+`V`, or a click anywhere on the chart, switches how it is drawn, and the rule says which of the four
+is up. **Лінії** is the default above. **Брайль** trades the continuous line for a grid of dots four times
+finer, which is what to reach for when two series sit a few percent apart and their lines land on the
+same row. **Тепло** drops position altogether: a row per series, a column per sample, dark blue idle
+through to red pinned — three rows instead of nine, and no series can hide under another. **Тепло ×2**
+paints two samples into every cell, upper half over lower, so the same three rows carry twice the
+history. The choice lives as long as the pane does; a restart comes back on lines.
+
 **The session list** opens on `Tab`. Every Claude session on the machine, newest first, titled by what
 the session was actually about. Move the highlight and the blocks below it switch to that session's
 project, media, files and links, so you can find a conversation by what it touched rather than by its
@@ -95,11 +103,12 @@ addresses it is deployed to — the repo and the addresses clickable. It is on b
 view shows it for the session it is following, the list for the one under the highlight.
 
 ```
-── ПРОЄКТ 8 ─────────────────────────────────────────
+── ПРОЄКТ 9 ─────────────────────────────────────────
   github.com/Moonkeemoo/reef            1.2G
     з них node_modules  840M
   feature/waves  ● змінено 3  ↑2 не запушено
     від master  ↓12 відстала  ↑4 своїх
+    60 дн ▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇▇
     * 33b0a63   4 хв  Hold one session per pane
     * 8a72738  2 год  Round the line count
     * 41ccca4   1 дн  Weigh the project and report git
@@ -117,6 +126,10 @@ more of them than real ones. An address inside a fenced block does not count: th
 picture of another project's pane, and while it counted, every session working in this repo was
 reported as deployed to reef. The weight names a child directory only when that child is most of the
 answer, which is the only case you can act on.
+
+Above the commits is two months of them, a column a day, shaded the way GitHub shades a contribution
+graph and cut to whatever the pane can hold. It answers the question the newest commit cannot: not
+when work last happened here, but whether it has been happening at all.
 
 Under the branch come its last four commits, oldest at the bottom, each with how long ago it landed —
 which is what says whether the branch is still warm without opening a terminal to ask. The column in
@@ -205,6 +218,7 @@ node sidebar.js 9de93e09
 | Press | What happens |
 |---|---|
 | `Tab` or `S` | open the session list, and press it again to close it |
+| `V` | switch how ЗАЛІЗО draws the load — lines, braille, heat, dense heat |
 | `↑` `↓`, or `k` `j` | move the highlight; the blocks below follow it |
 | `g` / `G` | jump to the newest / oldest session |
 | `Enter` | open the highlighted session in a new terminal tab, resumed |
@@ -214,7 +228,7 @@ node sidebar.js 9de93e09
 | `Ctrl+C` | quit |
 
 `Tab` and the arrow keys work in any keyboard layout, and so do the letters — the pane accepts them in
-their Ukrainian and Russian positions too (`і`/`ы` for `S`, `й` for `Q`, `л` and `о` for `k` and `j`).
+their Ukrainian and Russian positions too (`і`/`ы` for `S`, `й` for `Q`, `м` for `V`, `л` and `о` for `k` and `j`).
 You never have to switch layouts to drive it. `g` and `G` are the exception, Latin only.
 
 ### Mouse

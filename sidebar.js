@@ -42,6 +42,7 @@ const strip = (s) => s.replace(/\x1b\[[\d;]*m/g, '');
 // layout-proof alternative.
 const K_LIST = new Set(['s', 'S', 'і', 'І', 'ы', 'Ы', '\t']);
 const K_QUIT = new Set(['q', 'Q', 'й', 'Й']);
+const K_VIEW = new Set(['v', 'V', 'м', 'М']);
 const K_UP = new Set(['\u001b[A', 'k', 'л', 'Л']);
 const K_DOWN = new Set(['\u001b[B', 'j', 'о', 'О']);
 
@@ -502,6 +503,7 @@ async function dirSize(dir) {
 }
 
 const LOG_N = 4;                   // commits shown under the branch
+const HEAT_DAYS = 60;              // days of commit history behind the strip
 const defaults = new Map();        // what the remote calls its default branch, per repo
 
 // A remote's default branch is settled at clone time and does not move while the
@@ -537,6 +539,18 @@ async function gitState(dir) {
     const m = l.match(/^(\D*?)([0-9a-f]{7,40}) (\d+) (.*)$/);
     if (m) g.log.push({ graph: m[1], hash: m[2], at: +m[3] * 1000, subject: m[4] });
   }
+  // Two months of commits, one count per day, newest last. A repo that has been
+  // quiet for three weeks says so in a row nothing else in the pane reports.
+  const heat = await capture('git', ['log', '--format=%at', '--since=' + HEAT_DAYS + ' days ago'], dir);
+  const midnight = new Date().setHours(0, 0, 0, 0);
+  g.days = new Array(HEAT_DAYS).fill(0);
+  for (const l of heat.out.split('\n')) {
+    const t = +l.trim() * 1000;
+    if (!t) continue;
+    const d = Math.round((midnight - new Date(t).setHours(0, 0, 0, 0)) / 86400000);
+    if (d >= 0 && d < HEAT_DAYS) g.days[HEAT_DAYS - 1 - d]++;
+  }
+
   // How far the branch has drifted from the default one: the number that says
   // whether to rebase before carrying on, and the one nothing else reports until
   // a merge conflict does.
@@ -992,6 +1006,7 @@ function panel(out, key, label, items, room, count, focus, empty) {
   if (!items.length) { blockAt[out.length] = key; out.push(clip(dim('  ' + (empty || '(порожньо)')), W())); return; }
   for (const it of items.slice(off, off + room)) {
     if (it.open) rowHits[out.length] = { open: it.open };
+    if (it.chart) rowHits[out.length] = { chart: true };
     if (it.session != null) rowHits[out.length] = { session: it.session };
     if (it.pick) rowHits[out.length] = { pick: it.pick };
     blockAt[out.length] = key;
@@ -1094,7 +1109,12 @@ function bodyItems(st, base) {
 
 // One chart with three lines on it rather than three bars beside each other:
 // the same grid, the newest sample at the right edge, so a build that takes the
-// machine shows up as one shape instead of three.
+// machine shows up as one shape instead of three. Four ways to draw the same
+// history, because which one reads best depends on the pane and on what is
+// being watched: `v` cycles them, and so does a click on the chart.
+const CHART_MODES = ['лінії', 'брайль', 'тепло', 'тепло ×2'];
+let chartMode = 0;
+
 const SERIES = [
   { key: 'cpu', label: 'CPU', colour: '33' },
   { key: 'ram', label: 'RAM', colour: '36' },
@@ -1127,15 +1147,82 @@ function chart(h, n) {
   // The axis carries the scale, so the grid behind the lines can stay empty.
   const mid = h >> 1;
   return cells.map((row, r) => ({
+    chart: true,
     text: '  ' + dim(r === 0 ? '100' : r === mid ? ' 50' : r === h - 1 ? '  0' : '   ')
       + dim(r === 0 || r === mid || r === h - 1 ? '┤' : '│')
       + row.map((c) => (c ? sgr(c.colour, c.ch) : ' ')).join(''),
   }));
 }
 
+// Braille packs four rows of dots into a cell, so the same eight rows carry
+// thirty-two levels and two samples a column. It reads as a denser, dottier
+// version of the same chart — worth having when the numbers are close together
+// and the lines would sit on top of each other.
+const DOT = [[1, 2, 4, 64], [8, 16, 32, 128]];
+
+function braille(h, n) {
+  const cells = Array.from({ length: h }, () => new Array(n).fill(null));
+  const top = h * 4 - 1;
+  const put = (dx, dy, colour) => {
+    const row = cells[dy >> 2];
+    const cur = row[dx >> 1] || { bits: 0, colour };
+    cur.bits |= DOT[dx & 1][dy & 3];
+    row[dx >> 1] = cur;
+  };
+  for (const s of SERIES) {
+    const data = load[s.key].slice(-n * 2);
+    const from = n * 2 - data.length;
+    let prev = null;
+    data.forEach((v, i) => {
+      const y = Math.max(0, Math.min(top, Math.round((1 - v) * top)));
+      for (let d = Math.min(y, prev == null ? y : prev); d <= Math.max(y, prev == null ? y : prev); d++) put(from + i, d, s.colour);
+      prev = y;
+    });
+  }
+  const mid = h >> 1;
+  return cells.map((row, r) => ({
+    chart: true,
+    text: '  ' + dim(r === 0 ? '100' : r === mid ? ' 50' : r === h - 1 ? '  0' : '   ')
+      + dim(r === 0 || r === mid || r === h - 1 ? '┤' : '│')
+      + row.map((c) => (c ? sgr(c.colour, String.fromCharCode(0x2800 + c.bits)) : ' ')).join(''),
+  }));
+}
+
+// The same history as colour instead of position: a row per series, a column a
+// sample, dark blue idle through to red pinned. Three rows instead of nine, and
+// three series that never cross each other.
+const HEAT = [17, 18, 20, 26, 32, 38, 44, 49, 83, 119, 154, 190, 220, 214, 208, 196];
+const STOPS = [[20, 30, 70], [30, 120, 200], [60, 200, 140], [230, 210, 60], [220, 60, 50]];
+
+function heatRGB(v) {
+  const x = Math.max(0, Math.min(0.999, v)) * (STOPS.length - 1);
+  const [a, b] = [STOPS[Math.floor(x)], STOPS[Math.floor(x) + 1]];
+  const k = x % 1;
+  return a.map((c, i) => Math.round(c + (b[i] - c) * k)).join(';');
+}
+
+// dense packs two samples into one cell, the upper half painted as foreground
+// over the lower half as background, which doubles the history a row holds.
+function heat(n, dense) {
+  n -= 1;                                     // the label is a column wider than the chart's axis
+  return SERIES.filter((s) => load[s.key].length).map((s) => {
+    const data = load[s.key].slice(dense ? -n * 2 : -n);
+    const cells = [];
+    if (dense) {
+      for (let i = 0; i < data.length; i += 2) {
+        cells.push('\x1b[38;2;' + heatRGB(data[i]) + 'm\x1b[48;2;' + heatRGB(data[i + 1] == null ? data[i] : data[i + 1]) + 'm▀\x1b[0m');
+      }
+    } else {
+      for (const v of data) cells.push('\x1b[48;5;' + HEAT[Math.max(0, Math.min(15, Math.round(v * 15)))] + 'm \x1b[0m');
+    }
+    return { chart: true, text: '  ' + dim(s.label.padEnd(4)) + ' ' + ' '.repeat(Math.max(0, n - cells.length)) + cells.join('') };
+  });
+}
+
 // The chart takes about a third of the pane, and the numbers sit above it: a
 // window too short for the whole block loses its lower rows, and the readings
-// are the part worth keeping.
+// are the part worth keeping. The heat rows cost three whatever the window, so
+// only the tall views are held back on a short one.
 function loadRows() {
   const h = Math.max(3, Math.min(8, Math.round((H() - 2) * 0.3)));
   const n = Math.max(8, Math.min(HIST, W() - 6));
@@ -1148,10 +1235,12 @@ function loadRows() {
     const tail = note[s.key] ? note[s.key]() : '';
     return sgr(s.colour, s.label) + ' ' + Math.round(v * 100) + '%' + (tail ? dim(' ' + tail) : '');
   });
-  // Under about two dozen rows the chart would be handed two of them and paint
-  // its empty ceiling, so the numbers go on alone.
-  const row = { text: '  ' + legend.join(dim('  ·  ')) };
-  return H() < 24 ? [row] : [row, ...chart(h, n)];
+  // Under about two dozen rows a tall chart would be handed two of them and
+  // paint its empty ceiling, so the numbers go on alone.
+  const row = { chart: true, text: '  ' + legend.join(dim('  ·  ')) };
+  const tall = chartMode < 2;
+  if (tall && H() < 24) return [row];
+  return [row, ...(chartMode === 0 ? chart(h, n) : chartMode === 1 ? braille(h, n) : heat(n, chartMode === 3))];
 }
 
 // Where the selected session's work lives and what it has been deployed to.
@@ -1173,6 +1262,18 @@ function gitRow(g) {
   return '  ' + sgr('1', g.branch) + '  ' + (bits.length ? bits.join('  ') : dim('чисто'));
 }
 
+// Commits per day, the way GitHub colours them, cut to whatever the pane can
+// hold — the newest days are the ones kept. Shade is relative to the busiest day
+// in the window, because what matters is which days were the quiet ones.
+const GREEN = [236, 22, 28, 34, 40];
+
+function commitHeat(days) {
+  const room = Math.max(10, Math.min(days.length, W() - 12));
+  const window = days.slice(-room);
+  const peak = Math.max(1, ...window);
+  return window.map((n) => sgr('38;5;' + GREEN[n ? Math.min(4, Math.ceil(n / peak * 4)) : 0], '▇')).join('');
+}
+
 function projectItems(info) {
   const rows = [];
   const size = slow('size:' + info.dir, SIZE_TTL, () => dirSize(info.dir));
@@ -1188,6 +1289,7 @@ function projectItems(info) {
   if (git) {
     rows.push({ text: gitRow(git) });
     if (git.base) rows.push({ text: '    ' + dim('від ' + git.base.name) + '  ' + (git.base.behind ? sgr('33', '↓' + git.base.behind + ' відстала') : dim('свіжа')) + (git.base.ahead ? dim('  ↑' + git.base.ahead + ' своїх') : '') });
+    if (git.days) rows.push({ text: '    ' + dim(HEAT_DAYS + ' дн') + ' ' + commitHeat(git.days) });
     // The tail of the history, newest first, with its age: how long ago work
     // stopped here is the whole of "is this branch still warm". A commit opens
     // on GitHub, where the diff is.
@@ -1252,13 +1354,13 @@ function renderWatch() {
   layout(out, [
     { key: ALIVE, label: 'СЕСІЇ', items: live_, empty: 'нічого не рухалось останні 3 год' },
     ...(strayRows.length ? [{ key: 'СИРОТИ', label: 'СИРОТИ', items: strayRows }] : []),
-    { key: 'ЗАЛІЗО', label: 'ЗАЛІЗО', items: loadRows(), count: '' },
+    { key: 'ЗАЛІЗО', label: 'ЗАЛІЗО', items: loadRows(), count: CHART_MODES[chartMode] },
     { key: 'ПРОЄКТ', label: 'ПРОЄКТ', items: projectItems(projectOf({ path: file }, live)) },
     { key: 'ПЛАН', label: 'ПЛАН', items: todos, empty: 'немає активного плану' },
     ...bodyBlocks(live, live.cwd),
   ], H() - 2);
 
-  paint(out, dim(' Tab — список · клік відкриває · колесо гортає блок · q — вихід'));
+  paint(out, dim(' Tab — список · v — вид графіка · клік відкриває · колесо гортає · q — вихід'));
 }
 
 function renderPick() {
@@ -1334,6 +1436,7 @@ function onMouse(btn, y, press) {
   if (!press || b !== 0) return false;
   const hit = hitAt(y);
   if (!hit) return false;
+  if (hit.chart) { chartMode = (chartMode + 1) % CHART_MODES.length; return true; }
   if (hit.open) { openExternal(hit.open); return false; }
   if (hit.pick) { openPicker(hit.pick); return true; }
   if (hit.session == null) return false;
@@ -1404,6 +1507,7 @@ if (process.stdin.isTTY) {
     if (k === '\u0003') return bye();
     if (mode === 'watch') {
       if (K_LIST.has(k)) { openPicker(); draw(); }
+      else if (K_VIEW.has(k)) { chartMode = (chartMode + 1) % CHART_MODES.length; draw(); }
       else if (K_QUIT.has(k)) bye();
       return;
     }
