@@ -21,6 +21,7 @@ is following:
  ● зараз  Status line modific  Bash git push
  ◐  2 хв  Reef сессія - варп   чекає на тебе
  ◑ 1 год  Пошук інструменту    Edit sidebar.js
+
 ── ЗАЛІЗО ───────────────────────────────────────────
   CPU 31%  ·  RAM 56% 17.9G/31.9G  ·  VRAM 24% 3.8G
   100┤
@@ -30,15 +31,19 @@ is following:
      │
      │        ╭──────────────────────
     0┤────────╯
+
 ── ПЛАН 3 ───────────────────────────────────────────
   ✓ Diagnose why Warp closed
   ▸ Make the session rows clickable
   · Write the README
+
 ── МЕДІА 1 ──────────────────────────────────────────
   1.png  121K  image-cache/9de93e09…/1.png
+
 ── ФАЙЛИ 6 1–2 ──────────────────────────────────────
   20:27 docs/plan.md
   20:17 showcase/dashboard.html
+
 ── ЛІНКИ 17 ─────────────────────────────────────────
   https://docs.warp.dev/terminal/windows/tab-configs/
 
@@ -70,14 +75,15 @@ times it was written to, records the work instead of offering anything to click.
 under two names — absolute from an `Edit`, relative from a shell line — is one row.
 
 ЗАЛІЗО is the machine rather than the session: three lines on one grid, one sample a second, the
-newest at the right edge and the history reaching back as far as the pane is wide. CPU is yellow, RAM
-cyan, VRAM green, and the numbers above the chart are the current reading of each, so a build eating
-the box is one shape you recognise from across the room. The lines are box drawing: a run along a row where a
-reading holds, a corner where it turns, a stem down the rows it jumped. That is one level per row
-against braille's four, and it is what makes a series a line rather than a column of marks — the same
-trade every console chart from asciichart down makes, and the shape is the part being read. VRAM comes from `nvidia-smi`; where that is not on PATH
-the line and its number are absent. Under about two dozen rows the pane keeps the numbers and drops
-the chart, which would be squeezed into its own empty ceiling.
+newest at the right edge and the history reaching back as far as the pane is wide. CPU is yellow,
+RAM cyan, VRAM green, and the numbers above the chart are the current reading of each, so a build
+eating the box is one shape you recognise from across the room. The lines are box drawing: a run
+along a row where a reading holds, a corner where it turns, a stem down the rows it jumped. That is
+one level per row against braille's four, and it is what makes a series a line rather than a column
+of marks — the same trade every console chart from asciichart down makes, and the shape is the part
+being read. VRAM comes from `nvidia-smi`; where that is not on PATH the line and its number are
+absent. Under about two dozen rows the pane keeps the numbers and drops the chart, which would be
+squeezed into its own empty ceiling.
 
 **The session list** opens on `Tab`. Every Claude session on the machine, newest first, titled by what
 the session was actually about. Move the highlight and the blocks below it switch to that session's
@@ -89,10 +95,15 @@ addresses it is deployed to — the repo and the addresses clickable. It is on b
 view shows it for the session it is following, the list for the one under the highlight.
 
 ```
-── ПРОЄКТ 4 ─────────────────────────────────────────
+── ПРОЄКТ 8 ─────────────────────────────────────────
   github.com/Moonkeemoo/reef            1.2G
     з них node_modules  840M
-  master  ● змінено 3  ↑2 не запушено
+  feature/waves  ● змінено 3  ↑2 не запушено
+    від master  ↓12 відстала  ↑4 своїх
+    * 33b0a63   4 хв  Hold one session per pane
+    * 8a72738  2 год  Round the line count
+    * 41ccca4   1 дн  Weigh the project and report git
+    * 2be87de   2 дн  Show which repo a session is in
   reef-money.vercel.app
 ```
 
@@ -107,6 +118,13 @@ picture of another project's pane, and while it counted, every session working i
 reported as deployed to reef. The weight names a child directory only when that child is most of the
 answer, which is the only case you can act on.
 
+Under the branch come its last four commits, oldest at the bottom, each with how long ago it landed —
+which is what says whether the branch is still warm without opening a terminal to ask. The column in
+front of the hash is `git log --graph`, so a merge shows as one. Clicking a commit opens it on GitHub.
+When the branch is not the remote's default, the row above the commits says how far it has drifted
+from that default: `↓12 відстала` is twelve commits on master that this branch has never seen, and
+`свіжа` is a branch that has seen all of them.
+
 СИРОТИ appears in the live view when a test run walked away from a headless browser. Nothing else
 puts a row there — a browser you opened yourself carries no `--headless` and is never counted, and
 one younger than ten minutes is still somebody's running test. An empty machine shows no block at
@@ -118,6 +136,7 @@ all. Windows only.
  ◐ сьогодні 21:44  Reef сессія - варп закрився
  ◑ сьогодні 20:27  Пошук інструменту для гуманізації
  ○ вчора    18:02  Mono card API balance tracking
+
 ── ФАЙЛИ 6 1–2 ──────────────────────────────────────
   21:45 claude-sidebar/README.md
   …
@@ -132,6 +151,8 @@ The whole pane always fits: it paints exactly as many rows as the window has and
 Blocks are handed the room they ask for while there is enough, and share what is left evenly when
 there is not — so two images never cost a long file list a quarter of the pane. Anything that does
 not fit scrolls inside its own block instead of pushing the footer off the bottom.
+
+Every block but the first carries a blank row above its rule, which is a row it takes from the same budget: a short window spends its space on separation before it spends it on content, and the blocks start scrolling sooner than they used to.
 
 That is why nothing here reflows when you drag the divider. Make the pane narrower and rows get
 clipped with an `…`; make it shorter and blocks give up rows to each other and start scrolling.

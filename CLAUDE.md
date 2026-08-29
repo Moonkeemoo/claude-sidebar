@@ -18,7 +18,9 @@ remove them, and keep the `process.on('exit')` restore so a crash does not stran
 screen. Since ЗАЛІЗО the tick repaints every second whether or not the transcript moved, so the
 alternate screen is now what the pane rests on all day rather than only while a session is running.
 
-**Rows reach the screen through `panel()`, and nothing else may push one.** It is what records
+**Rows reach the screen through `panel()`, and nothing else may push one** — bar the blank line
+`layout` puts above each block, which records the block above it in `blockAt` so the wheel survives a
+pointer resting in the gap. `panel` is what records
 `rowHits[i]` (what a click there opens) and `blockAt[i]` (which block the wheel should move), and what
 runs every row through `clip()`. Push a line straight into `out` and both maps slip against the
 render from that point down: clicks land on the wrong thing, the wheel scrolls the wrong block, and

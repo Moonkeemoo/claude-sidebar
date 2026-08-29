@@ -198,6 +198,17 @@ const opens = Object.values(watch.hits).map((h) => h.open).filter((o) => o && !/
 assert.ok(opens.some((o) => o.endsWith('README.md')), 'the note the session wrote is not in the block');
 assert.ok(!opens.some((o) => /\.js$/.test(o)), 'a source file is still listed: ' + opens.join(' '));
 
+// ---- blocks stand apart, and the space between them still scrolls ----
+// The blank row is pushed by layout rather than by panel, which is the one
+// place allowed to skip panel — so it has to carry a block of its own, or the
+// wheel dies wherever the pointer lands in the gap.
+const rules = watch.lines.map((l, i) => i).filter((i) => /^── /.test(strip(watch.lines[i])));
+assert.ok(rules.length > 2, 'expected several blocks in the live view, found ' + rules.length);
+for (const i of rules.slice(1)) {
+  assert.strictEqual(strip(watch.lines[i - 1]), '', 'no blank row above the rule on row ' + (i + 1));
+  assert.ok(watch.blocks[i - 1], 'the blank row on row ' + i + ' belongs to no block');
+}
+
 // ---- the load chart spans its grid, and joins its readings into a line ----
 // A reading of 1 belongs on the top row and a reading of 0 on the bottom one,
 // and a jump between two of them has to draw the rows in between: corners with

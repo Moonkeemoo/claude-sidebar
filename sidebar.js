@@ -501,18 +501,52 @@ async function dirSize(dir) {
   };
 }
 
+const LOG_N = 4;                   // commits shown under the branch
+const defaults = new Map();        // what the remote calls its default branch, per repo
+
+// A remote's default branch is settled at clone time and does not move while the
+// pane is open, so it is asked once. A repo with no origin has none, and then
+// there is nothing to be behind.
+async function defaultBranch(dir) {
+  if (!defaults.has(dir)) {
+    const { out } = await capture('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], dir);
+    defaults.set(dir, out.trim().replace(/^origin\//, '') || null);
+  }
+  return defaults.get(dir);
+}
+
 async function gitState(dir) {
   const { out } = await capture('git', ['status', '--porcelain=v1', '-b'], dir);
   if (!out) return null;
   const lines = out.split('\n').filter((l) => l.trim());
   const head = lines.shift() || '';
   if (!head.startsWith('##')) return null;
-  return {
-    branch: (head.match(/^## ([^\s]+?)(?:\.\.\.|$)/) || [])[1] || '?',
+  const branch = (head.match(/^## ([^\s]+?)(?:\.\.\.|$)/) || [])[1] || '?';
+  const g = {
+    branch,
     ahead: +((head.match(/ahead (\d+)/) || [])[1] || 0),
     behind: +((head.match(/behind (\d+)/) || [])[1] || 0),
     dirty: lines.length,
+    log: [],
+    base: null,
   };
+  // --graph keeps the column that shows a merge; a line of it alone carries no
+  // hash and is dropped, which is what the match is for.
+  const log = await capture('git', ['log', '--graph', '-n', String(LOG_N), '--format=%h %at %s'], dir);
+  for (const l of log.out.split('\n')) {
+    const m = l.match(/^(\D*?)([0-9a-f]{7,40}) (\d+) (.*)$/);
+    if (m) g.log.push({ graph: m[1], hash: m[2], at: +m[3] * 1000, subject: m[4] });
+  }
+  // How far the branch has drifted from the default one: the number that says
+  // whether to rebase before carrying on, and the one nothing else reports until
+  // a merge conflict does.
+  const def = await defaultBranch(dir);
+  if (def && def !== branch) {
+    const { out: div } = await capture('git', ['rev-list', '--left-right', '--count', 'origin/' + def + '...HEAD'], dir);
+    const [b, a] = div.trim().split(/\s+/).map(Number);
+    if (b >= 0 && a >= 0) g.base = { name: def, behind: b, ahead: a };
+  }
+  return g;
 }
 
 // Headless browsers a test run walked away from. They hold gigabytes and nothing
@@ -968,10 +1002,17 @@ function panel(out, key, label, items, room, count, focus, empty) {
 // Lay the blocks out so the whole pane fits: one row per rule, the rest shared
 // by appetite. What does not fit scrolls inside its own block rather than
 // pushing the footer off the bottom of the screen.
+// A blank row above every block but the first, so the rules read as separators
+// rather than as more rows. The gap is charged to the budget with the headers,
+// and belongs to the block above it, so the wheel still works when the pointer
+// lands in the space.
 function layout(out, blocks, avail) {
   const wants = blocks.map((b) => (b.want != null ? b.want : Math.max(1, b.items.length)));
-  const room = share(wants, Math.max(0, avail - blocks.length));
-  blocks.forEach((b, i) => panel(out, b.key, b.label, b.items, room[i], b.count, b.focus, b.empty));
+  const room = share(wants, Math.max(0, avail - blocks.length * 2 + 1));
+  blocks.forEach((b, i) => {
+    if (i) { blockAt[out.length] = blocks[i - 1].key; out.push(''); }
+    panel(out, b.key, b.label, b.items, room[i], b.count, b.focus, b.empty);
+  });
 }
 
 // Reading a transcript's tail to see what it is doing is only worth it for a
@@ -1144,7 +1185,19 @@ function projectItems(info) {
   }
   if (size && size.blame) rows.push({ text: dim('    з них ' + size.blame.name + '  ' + weigh(size.blame.bytes)) });
   const git = info.git ? slow('git:' + info.dir, GIT_TTL, () => gitState(info.dir)) : null;
-  if (git) rows.push({ text: gitRow(git) });
+  if (git) {
+    rows.push({ text: gitRow(git) });
+    if (git.base) rows.push({ text: '    ' + dim('від ' + git.base.name) + '  ' + (git.base.behind ? sgr('33', '↓' + git.base.behind + ' відстала') : dim('свіжа')) + (git.base.ahead ? dim('  ↑' + git.base.ahead + ' своїх') : '') });
+    // The tail of the history, newest first, with its age: how long ago work
+    // stopped here is the whole of "is this branch still warm". A commit opens
+    // on GitHub, where the diff is.
+    for (const c of git.log) {
+      rows.push({
+        open: info.repo ? 'https://github.com/' + info.repo + '/commit/' + c.hash : null,
+        text: '    ' + dim(c.graph) + sgr('35', c.hash) + ' ' + dim(ago(Date.now() - c.at).padStart(6)) + '  ' + c.subject,
+      });
+    }
+  }
   for (const u of info.urls) rows.push({ open: 'https://' + u, text: '  ' + sgr('4;34', u) });
   return rows;
 }
