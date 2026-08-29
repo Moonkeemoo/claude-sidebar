@@ -1385,8 +1385,9 @@ function projectItems(info) {
   if (size && size.blame) rows.push({ text: dim('    з них ' + size.blame.name + '  ' + weigh(size.blame.bytes)) });
   const git = info.git ? slow('git:' + info.dir, GIT_TTL, () => gitState(info.dir)) : null;
   if (git) {
-    // The half-year belongs to the repo, above the line where the branch starts.
-    if (git.days) rows.push(...commitMatrix(git.days));
+    // The half-year belongs to the repo, above the line where the branch starts,
+    // and stands clear of both.
+    if (git.days) rows.push({ text: '' }, ...commitMatrix(git.days));
     rows.push({ text: '' });
     rows.push({ text: gitRow(git) });
     if (git.base) rows.push({ text: '    ' + dim('від ' + git.base.name) + '  ' + (git.base.behind ? sgr('33', '↓' + git.base.behind + ' відстала') : dim('свіжа')) + (git.base.ahead ? dim('  ↑' + git.base.ahead + ' своїх') : '') });

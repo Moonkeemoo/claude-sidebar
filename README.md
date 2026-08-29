@@ -108,9 +108,10 @@ addresses it is deployed to — the repo and the addresses clickable. It is on b
 view shows it for the session it is following, the list for the one under the highlight.
 
 ```
-── ПРОЄКТ 16 ─────────────────────────────────────────
+── ПРОЄКТ 17 ─────────────────────────────────────────
   github.com/Moonkeemoo/reef            1.2G
     з них node_modules  840M
+
   пн ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇
   вт ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇
   ср ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇ ▇
