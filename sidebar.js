@@ -1417,8 +1417,14 @@ function projectItems(info) {
       });
     }
   }
-  for (const u of info.urls) rows.push({ open: 'https://' + u, text: '  ' + sgr('4;34', u) });
   return rows;
+}
+
+// The addresses get a block of their own rather than the bottom of that one:
+// losing a deployment's address is the reason the block exists, and the bottom
+// of a block that holds half a year of commits is exactly what scrolls away.
+function deployItems(info) {
+  return info.urls.map((u) => ({ open: 'https://' + u, text: '  ' + sgr('4;34', u) }));
 }
 
 // The blocks below the head of a view, shared by both of them.
@@ -1463,6 +1469,7 @@ function renderWatch() {
 
   // Only ever a row when something is actually stranded, so an empty machine
   // costs the pane nothing.
+  const proj = projectOf({ path: file }, live);
   const stray = slow('orphans', ORPHAN_TTL, orphans) || [];
   const strayRows = stray.map((o) => ({
     text: '  ' + sgr('33', o.name) + dim('  ×' + o.n + '  ' + weigh(o.bytes) + '  від ' + hhmm(o.born)),
@@ -1472,7 +1479,8 @@ function renderWatch() {
     { key: ALIVE, label: 'СЕСІЇ', items: live_, empty: 'нічого не рухалось останні 3 год' },
     ...(strayRows.length ? [{ key: 'СИРОТИ', label: 'СИРОТИ', items: strayRows }] : []),
     { key: 'ЗАЛІЗО', label: 'ЗАЛІЗО', items: loadRows(), count: CHART_MODES[chartMode] },
-    { key: 'ПРОЄКТ', label: 'ПРОЄКТ', items: projectItems(projectOf({ path: file }, live)) },
+    { key: 'ПРОЄКТ', label: 'ПРОЄКТ', items: projectItems(proj) },
+    ...(proj.urls.length ? [{ key: 'ДЕПЛОЙ', label: 'ДЕПЛОЙ', items: deployItems(proj), count: '' }] : []),
     // A session that never writes a todo list — which, on this machine, is every
     // session — would otherwise hold three rows open to say so forever.
     ...(todos.length ? [{ key: 'ПЛАН', label: 'ПЛАН', items: todos }] : []),
@@ -1488,13 +1496,15 @@ function renderPick() {
   const items = sessions.map((s, i) => ({ session: i, text: pickRow(s, i === cursor) }));
   const sel = sessions[cursor];
   const st = sel ? scanSession(sel) : null;
+  const proj = st ? projectOf(sel, st) : null;
   const avail = H() - 2;
 
   // The list takes about half the pane and the selected session's body the rest,
   // so moving the cursor always shows something about what you are pointing at.
   layout(out, [
     { key: LIST, label: 'СЕСІЇ', items, want: Math.max(4, Math.floor(avail / 2)), count: sessions.length, focus: cursor },
-    ...(st ? [{ key: 'ПРОЄКТ', label: 'ПРОЄКТ', items: projectItems(projectOf(sel, st)) }] : []),
+    ...(proj ? [{ key: 'ПРОЄКТ', label: 'ПРОЄКТ', items: projectItems(proj) }] : []),
+    ...(proj && proj.urls.length ? [{ key: 'ДЕПЛОЙ', label: 'ДЕПЛОЙ', items: deployItems(proj), count: '' }] : []),
     ...(st ? bodyBlocks(st, st.cwd) : []),
   ], avail);
 

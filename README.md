@@ -108,9 +108,11 @@ the session was actually about. Move the highlight and the blocks below it switc
 project, media, files and links, so you can find a conversation by what it touched rather than by its
 id.
 
-ПРОЄКТ is the repo the session is working in, what it weighs, what git thinks of it, and the
-addresses it is deployed to — the repo and the addresses clickable. It is on both screens: the live
-view shows it for the session it is following, the list for the one under the highlight.
+ПРОЄКТ is the repo the session is working in, what it weighs and what git thinks of it, and ДЕПЛОЙ
+under it is where that repo is deployed — both clickable, and on both screens: the live view shows
+them for the session it is following, the list for the one under the highlight. The addresses are a
+block of their own because losing one is the reason they are on the pane at all, and the bottom of a
+block holding half a year of commits is exactly what scrolls out of sight.
 
 ```
 ── ПРОЄКТ 17 ─────────────────────────────────────────
@@ -131,6 +133,11 @@ view shows it for the session it is following, the list for the one under the hi
     * 8a72738  2 год  Round the line count
     * 41ccca4   1 дн  Weigh the project and report git
     * 2be87de   2 дн  Show which repo a session is in
+```
+
+```
+── ДЕПЛОЙ ─────────────────────────────────────────
+  reef-money-dev.vercel.app
   reef-money.vercel.app
 ```
 
