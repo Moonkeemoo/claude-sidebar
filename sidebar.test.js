@@ -365,6 +365,26 @@ assert.deepStrictEqual(plot([1, 1], 4, 4), [true, false, false, false], 'a full 
 assert.deepStrictEqual(plot([0, 0], 4, 4), [false, false, false, true], 'an empty one must draw on the floor alone');
 assert.deepStrictEqual(plot([0, 1], 4, 4), [true, true, true, true], 'a jump between readings must be joined into a line');
 
+// ---- and the column chart grades every column by how close it came ----
+// A column stands for the heaviest reading of that moment, so it must reach the
+// top row when the machine was pinned and leave a floor rather than a gap when
+// it was idle. The colour is the point of the mode: it says how bad the moment
+// was, and a red column on a calm machine would be a lie.
+const bars = (cpu, h, n) => eval('(function(){ const dim = (s) => s, sgr = (c, s) => c + ":" + s;'
+  + ' const cell = (s, w, right) => (right ? String(s).padStart(w) : String(s).padEnd(w));'
+  + ' const load = { cpu: ' + JSON.stringify(cpu) + ', ram: [], vram: [], net: [] };'
+  + src.match(/const SERIES = [\s\S]*?\nfunction columns[\s\S]*?\n\}/)[0]
+  + '\nreturn columns })()')(h, n).map((r) => r.text.slice(7));
+
+assert.deepStrictEqual(bars([1, 1], 4, 2), ['1;31:█1;31:█', '1;31:█1;31:█', '1;31:█1;31:█', '1;31:█1;31:█'],
+  'a full reading must fill its column to the top row, and read as critical');
+assert.deepStrictEqual(bars([0, 0], 4, 2), ['  ', '  ', '  ', '32:▁32:▁'],
+  'an idle machine must keep a floor under the chart rather than an empty frame');
+assert.deepStrictEqual(bars([0.5], 4, 1), [' ', ' ', '32:█', '32:█'],
+  'half the ceiling must reach half the rows, and half a machine is not critical');
+assert.deepStrictEqual(bars([0.05, 0.85], 4, 2), [' 31:▃', ' 31:█', ' 31:█', '32:▂31:█'],
+  'a quiet column and a loaded one must differ in colour, not only in height');
+
 // ---- and no control character got baked into the source ----
 // A shell heredoc collapses the escapes in the text it writes: `\b` becomes a
 // backspace byte and `\x1b` an escape. The file still parses, and a regex like

@@ -1554,10 +1554,10 @@ function bodyItems(st, base) {
 
 // One chart with three lines on it rather than three bars beside each other:
 // the same grid, the newest sample at the right edge, so a build that takes the
-// machine shows up as one shape instead of three. Four ways to draw the same
+// machine shows up as one shape instead of three. Five ways to draw the same
 // history, because which one reads best depends on the pane and on what is
 // being watched: `v` cycles them, and so does a click on the chart.
-const CHART_MODES = ['лінії', 'брайль', 'тепло', 'тепло ×2'];
+const CHART_MODES = ['колонки', 'лінії', 'брайль', 'тепло', 'тепло ×2'];
 let chartMode = 0;
 
 const SERIES = [
@@ -1622,6 +1622,39 @@ function gridRows(cells, top, extra) {
 
 function chart(h, n) {
   return gridRows(lineGrid(SERIES.map((s) => ({ data: seriesData(s, n), colour: s.colour })), h, n), '100%', { chart: true });
+}
+
+// Columns answer a different question than the lines do: not which part of the
+// machine was busy, but how close the machine came to having nothing left. So a
+// column is one sample, its height is the heaviest of the readings that have a
+// ceiling to be a share of — traffic has none and stays out of it — and its
+// colour is how bad that was. Green while there is room, amber once the machine
+// is working for it, red at the wall. Eighth-blocks give a six-row chart
+// forty-eight levels, and a floor under an idle machine rather than a gap.
+const BARS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+const GRADE = (v) => (v >= 0.9 ? '1;31' : v >= 0.8 ? '31' : v >= 0.6 ? '33' : '32');
+
+function barCell(v, r, h) {
+  const level = v * h;                        // how many rows tall this column is
+  const base = h - 1 - r;                     // whole rows under this one
+  if (level >= base + 1) return '█';
+  if (level <= base && base) return ' ';
+  return BARS[Math.max(0, Math.min(7, Math.round((level - base) * 8) - 1))];
+}
+
+function columns(h, n) {
+  const peak = new Array(n).fill(null);
+  for (const s of SERIES) {
+    if (s.auto) continue;
+    const data = load[s.key].slice(-n);
+    const from = n - data.length;             // a short history starts mid-grid
+    data.forEach((v, i) => { if (peak[from + i] == null || v > peak[from + i]) peak[from + i] = v; });
+  }
+  const cells = Array.from({ length: h }, (_, r) => peak.map((v) => {
+    const ch = v == null ? ' ' : barCell(v, r, h);
+    return ch === ' ' ? null : { ch, colour: GRADE(v) };
+  }));
+  return gridRows(cells, '100%', { chart: true });
 }
 
 // Braille packs four rows of dots into a cell, so the same eight rows carry
@@ -1726,9 +1759,9 @@ function loadRows() {
   // paint its empty ceiling, so the numbers go on alone.
   const row = { chart: true, text: '  ' + legend.join(dim('  ·  ')) };
   const heavy = procRows();
-  const tall = chartMode < 2;
+  const tall = chartMode < 3;
   if (tall && H() < 24) return [row, ...heavy];
-  const body = chartMode === 0 ? chart(h, n) : chartMode === 1 ? braille(h, n) : heat(n, chartMode === 3);
+  const body = tall ? [columns, chart, braille][chartMode](h, n) : heat(n, chartMode === 4);
   return [row, ...body, ...heavy];
 }
 

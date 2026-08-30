@@ -22,15 +22,15 @@ is following:
  ◐  2 хв  Reef сессія - варп   чекає на тебе
  ◑ 1 год  Пошук інструменту    Edit sidebar.js
 
-── ЗАЛІЗО лінії ─────────────────────────────────────
+── ЗАЛІЗО колонки ───────────────────────────────────
   CPU 31% · RAM 56% 17.9G/31.9G · VRAM 24% · NET ↓3K ↑4K · диск 254G
-  100┤
-     │              ╭─╮
-     │             ╭╯  ╰╮
-   50┤─────────────╯    ╰────────────
-     │
-     │        ╭──────────────────────
-    0┤────────╯
+  100%┤
+      │                         ▂▆▇▄▁
+      │                    ▃▅▅▄▆█████▆▇█▇▃
+      ┤                  ▁▆███████████████▅▁ ▁▂
+      │ ▃▃▁   ▂▄▂  ▁▄▇█▆▆██████████████████████▇▃  ▁
+      │████▅▅▇███▇▆███████████████████████████████▇█
+     0┤█████████████████████████████████████████████
 
                        RAM   CPU
   chrome         ×24    3.8G    5%  claude ×8
@@ -80,24 +80,30 @@ far more than that, and a list of sources, configs and probe scripts, each carry
 times it was written to, records the work instead of offering anything to click. One file arriving
 under two names — absolute from an `Edit`, relative from a shell line — is one row.
 
-ЗАЛІЗО is the machine rather than the session: three lines on one grid, one sample a second, the
-newest at the right edge and the history reaching back as far as the pane is wide. CPU is yellow,
-RAM cyan, VRAM green, and the numbers above the chart are the current reading of each, so a build
-eating the box is one shape you recognise from across the room. The lines are box drawing: a run
-along a row where a reading holds, a corner where it turns, a stem down the rows it jumped. That is
-one level per row against braille's four, and it is what makes a series a line rather than a column
-of marks — the same trade every console chart from asciichart down makes, and the shape is the part
-being read. VRAM comes from `nvidia-smi`; where that is not on PATH the line and its number are
-absent. Under about two dozen rows the pane keeps the numbers and drops the chart, which would be
+ЗАЛІЗО is the machine rather than the session: one sample a second, the newest at the right edge and
+the history reaching back as far as the pane is wide. A column is one of those seconds, drawn as tall
+as the heaviest reading that has a ceiling to be a share of — processor, memory, video memory — and
+coloured by how close that came to the ceiling. Green while there is room, amber once the machine is
+working for it, red at the wall, so the moment a build took the box is a red stretch you find without
+reading a number. Eighth-blocks give a seven-row chart fifty-six levels, which is enough that an idle
+machine draws a floor rather than an empty frame. Traffic stays out of the height, having no ceiling
+to be measured against, and keeps its rate in the numbers above; those numbers are the current
+reading of every series. VRAM comes from `nvidia-smi`, and where that is not on PATH it is absent
+from both. Under about two dozen rows the pane keeps the numbers and drops the chart, which would be
 squeezed into its own empty ceiling.
 
-`V`, or a click anywhere on the chart, switches how it is drawn, and the rule says which of the four
-is up. **Лінії** is the default above. **Брайль** trades the continuous line for a grid of dots four times
-finer, which is what to reach for when two series sit a few percent apart and their lines land on the
-same row. **Тепло** drops position altogether: a row per series, a column per sample, dark blue idle
-through to red pinned — three rows instead of nine, and no series can hide under another. **Тепло ×2**
-paints two samples into every cell, upper half over lower, so the same three rows carry twice the
-history. The choice lives as long as the pane does; a restart comes back on lines.
+`V`, or a click anywhere on the chart, switches how it is drawn, and the rule says which of the five
+is up. **Колонки** is the default above, and the only one that answers how loaded the machine was
+rather than which part of it was busy. **Лінії** puts all four series on one grid — CPU yellow, RAM
+cyan, VRAM green, NET magenta — in box drawing: a run along a row where a reading holds, a corner
+where it turns, a stem down the rows it jumped. That is one level per row against braille's four, and
+it is what makes a series a line rather than a column of marks — the same trade every console chart
+from asciichart down makes, and the shape is the part being read. **Брайль** takes the finer grid
+instead, which is what to reach for when two series sit a few percent apart and their lines land on
+the same row. **Тепло** drops position altogether: a row per series, a column per sample, dark blue
+idle through to red pinned — three rows instead of nine, and no series can hide under another.
+**Тепло ×2** paints two samples into every cell, upper half over lower, so the same three rows carry
+twice the history. The choice lives as long as the pane does; a restart comes back on columns.
 
 Under the chart is what is holding the machine, grouped by program rather than listed by process: a
 browser is thirty-odd processes and not one of them is ever heavy on its own, which is how a pane can
@@ -413,7 +419,7 @@ node sidebar.js 9de93e09
 | Press | What happens |
 |---|---|
 | `Tab` or `S` | open the session list, and press it again to close it |
-| `V` | switch how ЗАЛІЗО draws the load — lines, braille, heat, dense heat |
+| `V` | switch how ЗАЛІЗО draws the load — columns, lines, braille, heat, dense heat |
 | `A` | the spend screen — context, cache, and where the tokens and minutes went; again to leave |
 | `↑` `↓`, or `k` `j` | move the highlight; the blocks below follow it |
 | `g` / `G` | jump to the newest / oldest session |
