@@ -365,25 +365,29 @@ assert.deepStrictEqual(plot([1, 1], 4, 4), [true, false, false, false], 'a full 
 assert.deepStrictEqual(plot([0, 0], 4, 4), [false, false, false, true], 'an empty one must draw on the floor alone');
 assert.deepStrictEqual(plot([0, 1], 4, 4), [true, true, true, true], 'a jump between readings must be joined into a line');
 
-// ---- and the column chart grades every column by how close it came ----
-// A column stands for the heaviest reading of that moment, so it must reach the
-// top row when the machine was pinned and leave a floor rather than a gap when
-// it was idle. The colour is the point of the mode: it says how bad the moment
-// was, and a red column on a calm machine would be a lie.
-const bars = (cpu, h, n) => eval('(function(){ const dim = (s) => s, sgr = (c, s) => c + ":" + s;'
-  + ' const cell = (s, w, right) => (right ? String(s).padStart(w) : String(s).padEnd(w));'
-  + ' const load = { cpu: ' + JSON.stringify(cpu) + ', ram: [], vram: [], net: [] };'
+// ---- and the column chart gives every series a band and grades its columns ----
+// A band must reach its top row when that series was pinned and keep a floor
+// rather than a gap when it was idle. The colour is the point of the mode: it
+// says how hard that part of the machine was being pushed, and a red column on
+// a calm processor would be a lie. Traffic has no ceiling to be graded against,
+// so it keeps its own colour and is measured against its own busiest moment.
+const bars = (load, h, n) => eval('(function(){ const dim = (s) => s, sgr = (c, s) => c + ":" + s;'
+  + ' const load = ' + JSON.stringify(load) + ';'
   + src.match(/const SERIES = [\s\S]*?\nfunction columns[\s\S]*?\n\}/)[0]
   + '\nreturn columns })()')(h, n).map((r) => r.text.slice(7));
 
-assert.deepStrictEqual(bars([1, 1], 4, 2), ['1;31:█1;31:█', '1;31:█1;31:█', '1;31:█1;31:█', '1;31:█1;31:█'],
-  'a full reading must fill its column to the top row, and read as critical');
-assert.deepStrictEqual(bars([0, 0], 4, 2), ['  ', '  ', '  ', '32:▁32:▁'],
-  'an idle machine must keep a floor under the chart rather than an empty frame');
-assert.deepStrictEqual(bars([0.5], 4, 1), [' ', ' ', '32:█', '32:█'],
-  'half the ceiling must reach half the rows, and half a machine is not critical');
-assert.deepStrictEqual(bars([0.05, 0.85], 4, 2), [' 31:▃', ' 31:█', ' 31:█', '32:▂31:█'],
+const only = (cpu) => ({ cpu, ram: [], vram: [], net: [] });
+assert.deepStrictEqual(bars(only([1, 1]), 4, 3), ['1;31:█1;31:█', '1;31:█1;31:█', '1;31:█1;31:█', '1;31:█1;31:█'],
+  'a full reading must fill its band to the top row, and read as critical');
+assert.deepStrictEqual(bars(only([0, 0]), 4, 3), ['  ', '  ', '  ', '32:▁32:▁'],
+  'an idle series must keep a floor under its band rather than an empty frame');
+assert.deepStrictEqual(bars(only([0.05, 0.85]), 2, 3), [' 31:▆', '32:▁31:█'],
   'a quiet column and a loaded one must differ in colour, not only in height');
+
+const three = bars({ cpu: [0.5], ram: [0.5], vram: [], net: [3, 9] }, 8, 3);
+assert.strictEqual(three.length, 6, 'every series with a history gets a band, and an absent one takes no rows');
+assert.deepStrictEqual(three.slice(4), [' 35:█', '35:▅35:█'],
+  'traffic keeps its own colour and is scaled to the busiest moment on show');
 
 // ---- and no control character got baked into the source ----
 // A shell heredoc collapses the escapes in the text it writes: `\b` becomes a

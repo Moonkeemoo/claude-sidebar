@@ -1625,12 +1625,14 @@ function chart(h, n) {
 }
 
 // Columns answer a different question than the lines do: not which part of the
-// machine was busy, but how close the machine came to having nothing left. So a
-// column is one sample, its height is the heaviest of the readings that have a
-// ceiling to be a share of — traffic has none and stays out of it — and its
-// colour is how bad that was. Green while there is room, amber once the machine
-// is working for it, red at the wall. Eighth-blocks give a six-row chart
-// forty-eight levels, and a floor under an idle machine rather than a gap.
+// machine was busy, but how hard each part was being pushed. So every series
+// gets its own band with its own floor — a memory leak does not hide under a
+// busy processor — a column in it is one sample, and its colour is how close
+// that reading came to the ceiling. Green while there is room, amber once the
+// machine is working for it, red at the wall. Traffic has no ceiling to be
+// graded against and keeps its own colour, its height read against the busiest
+// moment on show. Eighth-blocks carry eight levels in a row, so a band one row
+// tall is still a chart, and an idle series draws a floor rather than a gap.
 const BARS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 const GRADE = (v) => (v >= 0.9 ? '1;31' : v >= 0.8 ? '31' : v >= 0.6 ? '33' : '32');
 
@@ -1643,18 +1645,24 @@ function barCell(v, r, h) {
 }
 
 function columns(h, n) {
-  const peak = new Array(n).fill(null);
-  for (const s of SERIES) {
-    if (s.auto) continue;
-    const data = load[s.key].slice(-n);
-    const from = n - data.length;             // a short history starts mid-grid
-    data.forEach((v, i) => { if (peak[from + i] == null || v > peak[from + i]) peak[from + i] = v; });
+  const list = SERIES.filter((s) => load[s.key].length);
+  const band = Math.max(1, Math.floor(h / list.length));
+  const w = n - 1;                            // the label is a column wider than the chart's axis
+  const rows = [];
+  for (const s of list) {
+    const data = seriesData(s, w);
+    const pad = ' '.repeat(Math.max(0, w - data.length));   // a short history starts mid-band
+    for (let r = 0; r < band; r++) {
+      rows.push({
+        chart: true,
+        text: '  ' + dim(r ? '    ' : s.label.padEnd(4)) + ' ' + pad + data.map((v) => {
+          const ch = barCell(v, r, band);
+          return ch === ' ' ? ch : sgr(s.auto ? s.colour : GRADE(v), ch);
+        }).join(''),
+      });
+    }
   }
-  const cells = Array.from({ length: h }, (_, r) => peak.map((v) => {
-    const ch = v == null ? ' ' : barCell(v, r, h);
-    return ch === ' ' ? null : { ch, colour: GRADE(v) };
-  }));
-  return gridRows(cells, '100%', { chart: true });
+  return rows;
 }
 
 // Braille packs four rows of dots into a cell, so the same eight rows carry
@@ -1759,9 +1767,13 @@ function loadRows() {
   // paint its empty ceiling, so the numbers go on alone.
   const row = { chart: true, text: '  ' + legend.join(dim('  ·  ')) };
   const heavy = procRows();
-  const tall = chartMode < 3;
+  // Bands and heat rows cost what they cost whatever the window; only the two
+  // views that want a tall grid are held back on a short one.
+  const tall = chartMode === 1 || chartMode === 2;
   if (tall && H() < 24) return [row, ...heavy];
-  const body = tall ? [columns, chart, braille][chartMode](h, n) : heat(n, chartMode === 4);
+  const body = chartMode === 0 ? columns(h, n)
+    : tall ? [chart, braille][chartMode - 1](h, n)
+      : heat(n, chartMode === 4);
   return [row, ...body, ...heavy];
 }
 
