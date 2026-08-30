@@ -1928,9 +1928,11 @@ function renderWatch() {
   }));
 
   layout(out, [
+    // The machine goes first: it is the one block that is worth a glance without
+    // reading anything, and the top of the pane is where a glance lands.
+    { key: 'ЗАЛІЗО', label: 'ЗАЛІЗО', items: loadRows(), count: CHART_MODES[chartMode] },
     { key: ALIVE, label: 'СЕСІЇ', items: live_, empty: 'нічого не рухалось останні 3 год' },
     ...(strayRows.length ? [{ key: 'СИРОТИ', label: 'СИРОТИ', items: strayRows }] : []),
-    { key: 'ЗАЛІЗО', label: 'ЗАЛІЗО', items: loadRows(), count: CHART_MODES[chartMode] },
     { key: 'ПРОЄКТ', label: 'ПРОЄКТ', items: projectItems(proj) },
     ...(proj.urls.length ? [{ key: 'ДЕПЛОЙ', label: 'ДЕПЛОЙ', items: deployItems(proj), count: '' }] : []),
     // A session that never writes a todo list — which, on this machine, is every

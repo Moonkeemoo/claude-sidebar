@@ -12,16 +12,11 @@ Node only, no dependencies, one file. It reads transcripts and never writes to t
 
 ## The three screens
 
-**The live view** is what you get on start. It opens with every session that has moved in the last
-three hours, then what the machine is doing, then the plan, media, files and links of the session it
-is following:
+**The live view** is what you get on start. It opens with what the machine is doing, because that is
+the one block worth a glance without reading anything, then every session that has moved in the last
+three hours, then the plan, media, files and links of the session it is following:
 
 ```
-── СЕСІЇ 5 1–3 ──────────────────────────────────────
- ● зараз  Status line modific  Bash git push
- ◐  2 хв  Reef сессія - варп   чекає на тебе
- ◑ 1 год  Пошук інструменту    Edit sidebar.js
-
 ── ЗАЛІЗО колонки ───────────────────────────────────
   CPU 31% · RAM 56% 17.9G/31.9G · VRAM 24% · NET ↓3K ↑4K · диск 254G
   CPU                     ▁▁▁▂▄▄▃▅▆▅▄▆▆▃▃▄▂▁▁▁
@@ -38,6 +33,11 @@ is following:
   svchost        ×93    1.6G    2%
   claude         ×3     1.4G    2%
   решта          ×357  10.0G    6%
+
+── СЕСІЇ 5 1–3 ──────────────────────────────────────
+ ● зараз  Status line modific  Bash git push
+ ◐  2 хв  Reef сессія - варп   чекає на тебе
+ ◑ 1 год  Пошук інструменту    Edit sidebar.js
 
 ── АГЕНТИ 2 ───────────────────────────────────────
   ▸ Review balance config              3 хв
@@ -56,7 +56,7 @@ is following:
  Tab — список · v — вид графіка · клік відкриває · колесо гортає · q — вихід
 ```
 
-The mark in front of a session is the useful part of that first block:
+The mark in front of a session is the useful part of the СЕСІЇ block:
 
 | Mark | Means |
 |---|---|
