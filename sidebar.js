@@ -154,7 +154,10 @@ function ingest(st, line) {
     } else if (b.type === 'text' && b.text) {
       const re = /https?:\/\/[^\s)>\]"'`]+/g;
       let m;
-      while ((m = re.exec(b.text))) st.links.set(m[0].replace(/[.,;:]$/, ''), t);
+      // A link written in bold ends up carrying the markers: `**https://…**`
+      // opens a page that does not exist, and it looks fine on screen. Sentence
+      // punctuation goes the same way, and no URL ends in any of these.
+      while ((m = re.exec(b.text))) st.links.set(m[0].replace(/[*~.,;:!?]+$/, ''), t);
     }
   }
 }

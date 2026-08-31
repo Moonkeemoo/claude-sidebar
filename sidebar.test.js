@@ -352,6 +352,23 @@ assert.ok(agent.agents.get('a1').done, 'the agent whose result came back is not 
 assert.strictEqual(agent.agents.get('a2').done, null, 'the one still out was closed by someone else result');
 assert.strictEqual(agent.agents.get('a2').what, 'explore', 'a dispatch with no description falls back to its type');
 
+// ---- a link is what it points at, not what it was written inside ----
+// A URL in a bold sentence carries the markers away with it, and the row looks
+// perfectly right while opening a page that does not exist. Same for a link at
+// the end of a sentence.
+const said = (text) => {
+  const st = ing.newState();
+  ing.ingest(st, JSON.stringify({ type: 'assistant', timestamp: at, message: { content: [{ type: 'text', text }] } }));
+  return [...st.links.keys()];
+};
+assert.deepStrictEqual(said('дивись **https://claude.ai/code/artifact/58df80dd**'),
+  ['https://claude.ai/code/artifact/58df80dd'], 'bold markers must not become part of the link');
+assert.deepStrictEqual(said('відкрий https://example.com/a, потім https://example.com/b.'),
+  ['https://example.com/a', 'https://example.com/b'], 'a link at the end of a clause keeps neither comma nor full stop');
+assert.deepStrictEqual(said('https://example.com/path_with_underscore_'),
+  ['https://example.com/path_with_underscore_'], 'an underscore is a path character and stays');
+
+
 // ---- the Mac's own tools, parsed the way they actually print ----
 // Neither of these runs on the machine this test does, and both fail silently:
 // slow() swallows a throw, so a parser that matches nothing looks exactly like a
