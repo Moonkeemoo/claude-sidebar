@@ -1479,7 +1479,14 @@ const ALIVE = 'ЖИВІ';
 // One block: its rule, then as many item rows as `room` allows, starting at this
 // block's own offset. Items are { text, open?, session? }. `focus`, when given,
 // drags the offset until that item is on screen — the picker's cursor.
-function panel(out, key, label, items, room, count, focus, empty) {
+function panel(out, key, label, items, room, count, focus, empty, note) {
+  // A block's caption explains the rows under it, so it sits above the scrolling
+  // window rather than inside it — scrolling a block must not take away what the
+  // block is. And it appears only where it costs nothing: the moment the block
+  // would have to hide a row of its own to make space, the explanation goes
+  // instead. Two rows of the thing beat two rows about the thing.
+  const cap = note && room - 2 >= items.length ? 2 : 0;
+  room -= cap;
   const max = Math.max(0, items.length - room);
   let off = Math.min(Math.max(0, scroll[key] || 0), max);
   if (focus != null) {
@@ -1494,6 +1501,12 @@ function panel(out, key, label, items, room, count, focus, empty) {
     + (max > 0 ? ' ' + (off + 1) + '–' + Math.min(items.length, off + room) : '');
   blockAt[out.length] = key;
   out.push(clip(rule(label, tag), W()));
+  if (cap) {
+    blockAt[out.length] = key;
+    out.push(clip(dim('  ' + note), W()));
+    blockAt[out.length] = key;
+    out.push('');
+  }
   if (!items.length) { blockAt[out.length] = key; out.push(clip(dim('  ' + (empty || '(порожньо)')), W())); return; }
   for (const it of items.slice(off, off + room)) {
     if (it.open) rowHits[out.length] = { open: it.open };
@@ -1513,11 +1526,13 @@ function panel(out, key, label, items, room, count, focus, empty) {
 // and belongs to the block above it, so the wheel still works when the pointer
 // lands in the space.
 function layout(out, blocks, avail) {
-  const wants = blocks.map((b) => (b.want != null ? b.want : Math.max(1, b.items.length)));
+  // A caption costs its block two rows, so it has to be asked for up front or it
+  // takes those rows out of the content instead.
+  const wants = blocks.map((b) => (b.want != null ? b.want : Math.max(1, b.items.length)) + (b.note ? 2 : 0));
   const room = share(wants, Math.max(0, avail - blocks.length * 2 + 1));
   blocks.forEach((b, i) => {
     if (i) { blockAt[out.length] = blocks[i - 1].key; out.push(''); }
-    panel(out, b.key, b.label, b.items, room[i], b.count, b.focus, b.empty);
+    panel(out, b.key, b.label, b.items, room[i], b.count, b.focus, b.empty, b.note);
   });
 }
 
@@ -2002,10 +2017,20 @@ function bodyBlocks(st, base) {
   const b = bodyItems(st, base);
   const out = [];
   const agents = agentRows(st);
-  if (agents.length) out.push({ key: 'АГЕНТИ', label: 'АГЕНТИ', items: agents });
-  if (b.media.length) out.push({ key: 'МЕДІА', label: 'МЕДІА', items: b.media });
-  out.push({ key: 'ФАЙЛИ', label: 'ФАЙЛИ', items: b.files, count: b.files.length + (st.partial ? '+' : '') });
-  out.push({ key: 'ЛІНКИ', label: 'ЛІНКИ', items: b.links });
+  if (agents.length) {
+    out.push({
+      key: 'АГЕНТИ', label: 'АГЕНТИ', items: agents,
+      note: 'кого ця сесія відправила працювати окремо — ▸ ще в роботі',
+    });
+  }
+  if (b.media.length) {
+    out.push({ key: 'МЕДІА', label: 'МЕДІА', items: b.media, note: 'скріншоти й картинки, вставлені в цю сесію' });
+  }
+  out.push({
+    key: 'ФАЙЛИ', label: 'ФАЙЛИ', items: b.files, count: b.files.length + (st.partial ? '+' : ''),
+    note: 'з написаного — тільки те, що відкривають і читають',
+  });
+  out.push({ key: 'ЛІНКИ', label: 'ЛІНКИ', items: b.links, note: 'адреси, які сесія назвала — клік відкриває' });
   return out;
 }
 
@@ -2050,14 +2075,32 @@ function renderWatch() {
   layout(out, [
     // The machine goes first: it is the one block that is worth a glance without
     // reading anything, and the top of the pane is where a glance lands.
-    { key: 'ЗАЛІЗО', label: 'ЗАЛІЗО', items: loadRows(), count: CHART_MODES[chartMode] },
-    { key: ALIVE, label: 'СЕСІЇ', items: live_, empty: 'нічого не рухалось останні 3 год' },
-    ...(strayRows.length ? [{ key: 'СИРОТИ', label: 'СИРОТИ', items: strayRows }] : []),
-    { key: 'ПРОЄКТ', label: 'ПРОЄКТ', items: projectItems(proj) },
-    ...(proj.urls.length ? [{ key: 'ДЕПЛОЙ', label: 'ДЕПЛОЙ', items: deployItems(proj), count: '' }] : []),
+    {
+      key: 'ЗАЛІЗО', label: 'ЗАЛІЗО', items: loadRows(), count: CHART_MODES[chartMode],
+      note: 'навантаження машини посекундно, найновіше праворуч',
+    },
+    {
+      key: ALIVE, label: 'СЕСІЇ', items: live_, empty: 'нічого не рухалось останні 3 год',
+      note: 'сесії Клода за останні 3 години — ◐ означає, що чекає на тебе',
+    },
+    ...(strayRows.length ? [{
+      key: 'СИРОТИ', label: 'СИРОТИ', items: strayRows,
+      note: 'браузери, що лишились після тестів і досі тримають пам’ять',
+    }] : []),
+    {
+      key: 'ПРОЄКТ', label: 'ПРОЄКТ', items: projectItems(proj),
+      note: 'репозиторій цієї сесії: вага, коміти по днях, стан гілки',
+    },
+    ...(proj.urls.length ? [{
+      key: 'ДЕПЛОЙ', label: 'ДЕПЛОЙ', items: deployItems(proj), count: '',
+      note: 'куди ця робота вже викладена — клік відкриває',
+    }] : []),
     // A session that never writes a todo list — which, on this machine, is every
     // session — would otherwise hold three rows open to say so forever.
-    ...(todos.length ? [{ key: 'ПЛАН', label: 'ПЛАН', items: todos }] : []),
+    ...(todos.length ? [{
+      key: 'ПЛАН', label: 'ПЛАН', items: todos,
+      note: 'що Клод збирається зробити далі, по черзі',
+    }] : []),
     ...bodyBlocks(live, live.cwd),
   ], H() - 2);
 
@@ -2092,7 +2135,6 @@ const subRow = (text) => ({ text: '  ' + dim(text) });
 // against each other with no gap they read as one block of grey. A blank line is
 // what separates them; the same in reverse for a line that sums up what is above
 // it. Both go through panel like every other row, so the maps stay in step.
-const intro = (text) => [subRow(text), { text: '' }];
 const outro = (...lines) => [{ text: '' }, ...lines.map(subRow)];
 
 // A count as a person reads it: thousands and millions, two significant figures
@@ -2147,7 +2189,6 @@ function toolRows(s) {
   const stuck = [...s.open.values()].filter((o) => o.at && Date.now() - o.at > 60000)
     .sort((a, b) => a.at - b.at);
   return [
-    ...intro('хто повернув у вікно найбільше тексту — і хто досі не повернувся'),
     ...stuck.slice(0, 3).map((o) => ({
       text: '  ' + sgr('1;33', cell('⏱ ' + o.name, GUT + VAL)) + '  ' + sgr('33', 'висить ' + span(Date.now() - o.at)),
     })),
@@ -2199,7 +2240,7 @@ function traceRows(s, h, n) {
   const eq = byTurn(s.marks, n, (m) => m.eq, 'avg');
   const err = byTurn(s.marks, n, (m) => m.err, 'sum');
   const eqPeak = Math.max(...eq.out.filter((v) => v != null), 1);
-  const rows = intro('як дорожчав хід від початку сесії й де падали інструменти');
+  const rows = [];
   for (let r = 0; r < h; r++) {
     rows.push({
       text: '  ' + dim(cell(r ? '' : 'ціна', 4)) + ' ' + eq.out.map((v) => {
@@ -2245,7 +2286,6 @@ function errRows(s) {
   const total = all.reduce((a, e) => a + e.n, 0) || 1;
   const room = Math.max(12, W() - NOTE - 14);
   return [
-    ...intro('що ламалось — за суттю збою, а не за інструментом, який його доповів'),
     ...all.slice(0, 5).map((e) => {
       const on = Math.round(e.n / total * 10);
       return {
@@ -2323,7 +2363,7 @@ function priceRows(s) {
   const last = s.marks[s.marks.length - 1];
   const waste = wasteOf(s);
   const inTools = [...s.tools.values()].reduce((a, e) => a + e.ms, 0);
-  const rows = intro('скільки сесія вже коштувала і скільки коштуватиме наступний хід');
+  const rows = [];
   if (s.bill) rows.push(...moneyRows(s));
   // Without an invoice the only clock is the transcript's own span, split the
   // one way a transcript can split it: time inside a tool, and everything else —
@@ -2375,7 +2415,6 @@ function makeupRows(s, h, n) {
   };
   const line = (label, v, note) => statRow(label, num(v), bar(v) + dim('  ' + note));
   return [
-    ...intro('що лежить у вікні моделі просто зараз і як воно туди набралось'),
     statRow('у вікні', num(s.ctx), dim('стільки надсилається наново на кожному ході')),
     line('стартовий пакет', s.base, 'системний промт, інструменти, пам’ять'),
     line('наша розмова', grown, 'за ' + plural(s.rounds.length, 'запит', 'запити', 'запитів')),
@@ -2411,7 +2450,6 @@ function askRows(s) {
   const room = Math.max(12, W() - 34);
   const mid = rows.length ? [...rows].sort((a, b) => a.cost - b.cost)[rows.length >> 1] : null;
   return [
-    ...intro('які прохання коштували найбільше — і скільки коштує звичайне'),
     ...top.map((r) => ({
       // The columns line up with every other block: what it cost, then how much
       // work it took, then the ask itself where the explanations sit elsewhere.
@@ -2440,12 +2478,29 @@ function renderStats() {
       ...(s.turns ? [{
         key: 'ЦІНА', label: clip('ЦІНА · ' + title, 40),
         items: priceRows(s), count: (s.bill ? 'з рахунку' : 'оцінка') + (s.model ? '  ·  ' + s.model : ''),
+        note: 'скільки сесія вже коштувала і скільки коштуватиме наступний хід',
       }] : []),
-      ...(s.marks.length > 2 ? [{ key: 'ПЕРЕБІГ', label: 'ПЕРЕБІГ', items: traceRows(s, Math.max(2, h - 2), n), count: plural(s.turns, 'хід', 'ходи', 'ходів') }] : []),
-      ...(s.base ? [{ key: 'КОНТЕКСТ', label: 'КОНТЕКСТ', items: makeupRows(s, h, n), count: '' }] : []),
-      ...(s.errs.size ? [{ key: 'ЗБОЇ', label: 'ЗБОЇ', items: errRows(s), count: '' }] : []),
-      ...(s.rounds.length ? [{ key: 'ЗАПИТИ', label: 'НАЙДОРОЖЧІ ЗАПИТИ', items: askRows(s), count: '' }] : []),
-      { key: 'ІНСТРУМЕНТИ', label: 'ІНСТРУМЕНТИ', items: toolRows(s), count: '' },
+      ...(s.marks.length > 2 ? [{
+        key: 'ПЕРЕБІГ', label: 'ПЕРЕБІГ', items: traceRows(s, Math.max(2, h - 2), n),
+        count: plural(s.turns, 'хід', 'ходи', 'ходів'),
+        note: 'як дорожчав хід від початку сесії й де падали інструменти',
+      }] : []),
+      ...(s.base ? [{
+        key: 'КОНТЕКСТ', label: 'КОНТЕКСТ', items: makeupRows(s, h, n), count: '',
+        note: 'що лежить у вікні моделі просто зараз і як воно туди набралось',
+      }] : []),
+      ...(s.errs.size ? [{
+        key: 'ЗБОЇ', label: 'ЗБОЇ', items: errRows(s), count: '',
+        note: 'що ламалось — за суттю збою, а не за інструментом, який його доповів',
+      }] : []),
+      ...(s.rounds.length ? [{
+        key: 'ЗАПИТИ', label: 'НАЙДОРОЖЧІ ЗАПИТИ', items: askRows(s), count: '',
+        note: 'які прохання коштували найбільше — і скільки коштує звичайне',
+      }] : []),
+      {
+        key: 'ІНСТРУМЕНТИ', label: 'ІНСТРУМЕНТИ', items: toolRows(s), count: '',
+        note: 'хто повернув у вікно найбільше тексту — і хто досі не повернувся',
+      },
     ], H() - 2);
   }
   paint(out, dim(' a — назад · Tab — список · q — вихід'));
@@ -2463,7 +2518,11 @@ function renderPick() {
   // The list takes about half the pane and the selected session's body the rest,
   // so moving the cursor always shows something about what you are pointing at.
   layout(out, [
-    { key: LIST, label: 'СЕСІЇ', items, want: Math.max(4, Math.floor(avail / 2)), count: sessions.length, focus: cursor },
+    {
+      key: LIST, label: 'СЕСІЇ', items, want: Math.max(4, Math.floor(avail / 2)),
+      count: sessions.length, focus: cursor,
+      note: 'усі сесії на машині — Enter відкриє вибрану новою вкладкою',
+    },
     ...(proj ? [{ key: 'ПРОЄКТ', label: 'ПРОЄКТ', items: projectItems(proj) }] : []),
     ...(proj && proj.urls.length ? [{ key: 'ДЕПЛОЙ', label: 'ДЕПЛОЙ', items: deployItems(proj), count: '' }] : []),
     ...(st ? bodyBlocks(st, st.cwd) : []),

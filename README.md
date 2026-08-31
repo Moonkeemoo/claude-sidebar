@@ -18,6 +18,8 @@ three hours, then the plan, media, files and links of the session it is followin
 
 ```
 ── ЗАЛІЗО колонки ───────────────────────────────────
+  навантаження машини посекундно, найновіше праворуч
+
   CPU 31% · RAM 56% 17.9G/31.9G · VRAM 24% · NET ↓3K ↑4K · диск 254G
   CPU                     ▁▁▁▂▄▄▃▅▆▅▄▆▆▃▃▄▂▁▁▁
        ▄▅▃▃▄▄▃▃▅▄▃▄▅▄▄▆▇▆▆████████████████████▇▅▆▆▄
@@ -36,26 +38,43 @@ three hours, then the plan, media, files and links of the session it is followin
   решта          ×357  10.0G    6%
 
 ── СЕСІЇ 5 1–3 ──────────────────────────────────────
+  сесії Клода за останні 3 години — ◐ означає, що чекає на тебе
+
  ● зараз  Status line modific  Bash git push
  ◐  2 хв  Reef сессія - варп   чекає на тебе
  ◑ 1 год  Пошук інструменту    Edit sidebar.js
 
 ── АГЕНТИ 2 ───────────────────────────────────────
+  кого ця сесія відправила працювати окремо — ▸ ще в роботі
+
   ▸ Review balance config              3 хв
   ✓ Pull GameFlow from Coda            6 хв
 
 ── МЕДІА 1 ──────────────────────────────────────────
+  скріншоти й картинки, вставлені в цю сесію
+
   1.png  121K  image-cache/9de93e09…/1.png
 
 ── ФАЙЛИ 6 1–2 ──────────────────────────────────────
+  з написаного — тільки те, що відкривають і читають
+
   20:27 docs/plan.md
   20:17 showcase/dashboard.html
 
 ── ЛІНКИ 17 ─────────────────────────────────────────
+  адреси, які сесія назвала — клік відкриває
+
   https://docs.warp.dev/terminal/windows/tab-configs/
 
  Tab — список · v — вид графіка · клік відкриває · колесо гортає · q — вихід
 ```
+
+Every block carries one dim line saying what it is and why it is on the screen, because a name like
+ЗАЛІЗО or СИРОТИ explains nothing on its own. The line lives above the block's scrolling window, so
+scrolling a block never takes away what the block is — and it appears only where it costs nothing.
+The moment a block would have to hide a row of its own to make space, the explanation goes instead:
+two rows of the thing beat two rows about the thing. That is why the load chart on a short pane has
+no caption and the file list still does.
 
 The mark in front of a session is the useful part of the СЕСІЇ block:
 
