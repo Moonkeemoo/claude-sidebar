@@ -449,7 +449,7 @@ assert.deepStrictEqual(three.slice(4), [' 35:█', '35:▅35:█'],
 // asynchronous — so nothing else here would catch a band one column too wide.
 // Fewer turns than columns must leave the spare columns blank rather than draw a
 // floor under turns that do not exist.
-const pace = (marks, n, h) => eval('(function(){ const dim = (s) => s, sgr = (c, s) => s, clock = () => "";'
+const pace = (marks, n, h) => eval('(function(){ const dim = (s) => s, sgr = (c, s) => s, clock = () => "", subRow = (t) => ({ text: t });'
   + ' const num = (v) => String(Math.round(v)), hhmm = (t) => new Date(t).toISOString().slice(11, 16);'
   + ' const cell = (s, w, right) => (right ? String(s).padStart(w) : String(s).padEnd(w));'
   + ' const heatStrip = (v, n) => " ".repeat(n);'
@@ -465,14 +465,15 @@ const t0 = Date.parse('2026-08-29T09:00:00Z');
 const climb = Array.from({ length: 40 }, (_, i) => ({ eq: 1000 + i * 500, err: 0, t: t0 + i * 60000 }));
 for (const cols of [40, 60, 100]) {
   const n = Math.max(12, cols - 8);
+  // Row 0 is the block's one-line explanation of itself, not part of the chart.
   const band = pace(climb, n, 3);
-  for (const r of band.slice(0, 3)) {
+  for (const r of band.slice(1, 4)) {
     assert.strictEqual(width(r.text), 7 + n, 'a price band row must be the width of the pane, was ' + width(r.text));
   }
-  assert.strictEqual(width(band[3].text), 7 + n, 'and so must the time axis under it');
+  assert.strictEqual(width(band[4].text), 7 + n, 'and so must the time axis under it');
 }
 const sparse = pace([{ eq: 100, err: 0, t: t0 }, { eq: 400, err: 0, t: t0 + 1000 }, { eq: 900, err: 0, t: t0 + 2000 }], 12, 2);
-assert.strictEqual(strip(sparse[1].text).slice(7).replace(/[^ ]/g, '').length, 9,
+assert.strictEqual(strip(sparse[2].text).slice(7).replace(/[^ ]/g, '').length, 9,
   'with three turns and twelve columns, nine columns must stay empty');
 
 // A session that ran past midnight must not label its end with a smaller number

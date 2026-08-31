@@ -2064,6 +2064,30 @@ function renderWatch() {
   paint(out, dim(' Tab — список · a — витрати · v — вид графіка · клік відкриває · q — вихід'));
 }
 
+// ---- one grid for the whole spend screen ----
+// Every block was laying its own columns out, so nothing lined up down the page
+// and the eye had to find the numbers again in each one. Three columns now:
+// what it is, the number, and what the number means. The third starts at the
+// same place in every block, tables included, which is the only reason a screen
+// this dense can be read at a glance rather than line by line.
+const GUT = 17;                    // what it is
+const VAL = 7;                     // the number
+const NOTE = 2 + GUT + VAL + 2;    // where the explanation starts, in every block
+
+// The number is what the row is for, so it carries the weight; the label and the
+// explanation are there to be read once and then skipped over.
+function statRow(label, value, note, colour) {
+  return {
+    text: '  ' + dim(cell(label, GUT)) + sgr(colour || '1', cell(value, VAL, true))
+      + (note ? '  ' + note : ''),
+  };
+}
+
+// One line under a block's rule saying what the block is for. Names like
+// "перечитаний кеш" mean nothing until someone says why they are on the screen,
+// and a pane that only makes sense to whoever wrote it is a pane read once.
+const subRow = (text) => ({ text: '  ' + dim(text) });
+
 // A count as a person reads it: thousands and millions, two significant figures
 // where it matters and none where it does not.
 // 21 запит, 24 запити, 25 запитів — the one place the pane counts things in
@@ -2116,14 +2140,16 @@ function toolRows(s) {
   const stuck = [...s.open.values()].filter((o) => o.at && Date.now() - o.at > 60000)
     .sort((a, b) => a.at - b.at);
   return [
+    subRow('хто повернув у вікно найбільше тексту — і хто досі не повернувся'),
     ...stuck.slice(0, 3).map((o) => ({
-      text: '  ' + sgr('33', '⏱ ' + o.name + ' висить ' + span(Date.now() - o.at)),
+      text: '  ' + sgr('1;33', cell('⏱ ' + o.name, GUT + VAL)) + '  ' + sgr('33', 'висить ' + span(Date.now() - o.at)),
     })),
-    { text: dim('  ' + cell('', 18) + cell('виклики', 8, true) + cell('вихід', 8, true) + cell('час', 8, true) + cell('збої', 7, true)) },
+    { text: dim('  ' + cell('', GUT) + cell('виклики', VAL, true) + '  '
+      + cell('вихід', 8, true) + cell('час', 9, true) + cell('збої', 8, true)) },
     ...rows.map((e) => ({
-      text: '  ' + cell(clip(e.name, 18), 18) + cell(e.calls, 8, true) + cell(num(e.bytes / 4), 8, true)
-        + cell(e.ms > 60000 ? span(e.ms) : Math.round(e.ms / 1000) + ' с', 8, true)
-        + (e.errors ? sgr('33', cell(e.errors, 7, true)) : dim(cell('·', 7, true))),
+      text: '  ' + cell(clip(e.name, GUT), GUT) + sgr('1', cell(e.calls, VAL, true)) + '  '
+        + dim(cell(num(e.bytes / 4), 8, true) + cell(e.ms > 60000 ? span(e.ms) : Math.round(e.ms / 1000) + ' с', 9, true))
+        + (e.errors ? sgr('33', cell(e.errors, 8, true)) : dim(cell('·', 8, true))),
     })),
   ];
 }
@@ -2166,7 +2192,7 @@ function traceRows(s, h, n) {
   const eq = byTurn(s.marks, n, (m) => m.eq, 'avg');
   const err = byTurn(s.marks, n, (m) => m.err, 'sum');
   const eqPeak = Math.max(...eq.out.filter((v) => v != null), 1);
-  const rows = [];
+  const rows = [subRow('як дорожчав хід від початку сесії й де падали інструменти')];
   for (let r = 0; r < h; r++) {
     rows.push({
       text: '  ' + dim(cell(r ? '' : 'ціна', 4)) + ' ' + eq.out.map((v) => {
@@ -2183,22 +2209,18 @@ function traceRows(s, h, n) {
   if (axis) rows.push(axis);
   const live = eq.out.filter((v) => v != null);
   if (live.length > 1) {
-    rows.push({
-      text: '  ' + dim(cell('', 5)) + dim('хід ' + num(live[0]) + ' → ' + num(live[live.length - 1])
-        + '  ·  пік ' + num(eqPeak)),
-    });
+    rows.push(subRow('ціна ходу: ' + num(live[0]) + ' на початку, ' + num(live[live.length - 1])
+      + ' наприкінці, найдорожчий ' + num(eqPeak)));
   }
   // How long a turn takes by Claude Code's own stopwatch, which is the only
-  // measure here that is not derived from the timestamps around it.
+  // measure here that is not derived from the timestamps around it. Percentiles
+  // are spelled out: p90 is a word for people who already know what it means.
   if (s.durs.length > 2) {
     const d = [...s.durs].sort((a, b) => a - b);
     const q = (p) => d[Math.min(d.length - 1, Math.floor(d.length * p))];
     const over = d.filter((x) => x > 300000).length;
-    rows.push({
-      text: '  ' + dim(cell('', 5)) + dim('хід медіана ') + clock(q(0.5)) + dim(' · p90 ') + clock(q(0.9))
-        + dim(' · найдовший ') + clock(d[d.length - 1])
-        + dim('  ·  ' + Math.round(over / d.length * 100) + '% довші за 5 хв'),
-    });
+    rows.push(subRow('половина ходів коротші за ' + clock(q(0.5)) + ', дев’ять з десяти за '
+      + clock(q(0.9)) + ', найдовший ' + clock(d[d.length - 1])));
   }
   return rows;
 }
@@ -2212,24 +2234,30 @@ const ASK_N = 6;                   // rounds shown
 function errRows(s) {
   const all = [...s.errs.values()].sort((a, b) => b.n - a.n);
   const total = all.reduce((a, e) => a + e.n, 0) || 1;
-  const room = Math.max(12, W() - 52);
-  return all.slice(0, 5).map((e) => {
-    const on = Math.round(e.n / total * 10);
-    return {
-      text: '  ' + cell(clip(e.kind, 26), 26) + cell(e.n, 4, true) + '  '
-        + sgr('33', '█'.repeat(on)) + dim('░'.repeat(10 - on)) + '  ' + dim(clip(e.sample || e.tool, room)),
-    };
-  });
+  const room = Math.max(12, W() - NOTE - 14);
+  return [
+    subRow('що ламалось — за суттю збою, а не за інструментом, який його доповів'),
+    ...all.slice(0, 5).map((e) => {
+      const on = Math.round(e.n / total * 10);
+      return {
+        text: '  ' + cell(clip(e.kind, GUT + 4), GUT + 4) + sgr('1;33', cell(e.n, VAL - 4, true)) + '  '
+          + sgr('33', '█'.repeat(on)) + dim('░'.repeat(10 - on)) + '  ' + dim(clip(e.sample || e.tool, room)),
+      };
+    }),
+  ];
 }
 
 // Add them up in input-token equivalents and the shape of the bill appears,
 // which is rarely the shape anyone expects: on a long session it is almost
 // entirely the prompt being re-read on every single turn.
 function priceOf(s) {
+  // Named for what they are rather than for what the price list calls them:
+  // "cache read" is a billing term, and the thing it bills for is the whole
+  // conversation being sent again on every single turn.
   const parts = [
-    { label: 'кеш перечитано', v: s.read * RATE.read, colour: '36' },
-    { label: 'вихід і думання', v: s.out * RATE.out, colour: '33' },
-    { label: 'запис у кеш', v: s.wrote * RATE.wrote, colour: '35' },
+    { label: 'старий контекст', v: s.read * RATE.read, colour: '36', note: 'усе попереднє, надіслане знову' },
+    { label: 'мої відповіді', v: s.out * RATE.out, colour: '33', note: 'написане й продумане' },
+    { label: 'новий контекст', v: s.wrote * RATE.wrote, colour: '35', note: 'дописане у вікно цього разу' },
   ];
   return { parts, total: parts.reduce((a, p) => a + p.v, 0) };
 }
@@ -2262,70 +2290,63 @@ function moneyRows(s) {
   const lines = (b.totalLinesAdded || 0) + (b.totalLinesRemoved || 0);
   const hours = (b.totalDuration || 0) / 3600000;
   const at = b.startTime && b.totalDuration ? b.startTime + b.totalDuration : 0;
-  const rows = [{
-    text: '  ' + dim(cell('рахунок', 17)) + sgr('1;33', cell(usd(b.totalCostUSD), 6, true))
-      + dim('  ' + (models.map(([n, v]) => n + ' ' + usd(v)).join('  ·  ') || '—')),
-  }];
-  if (lines) {
-    rows.push({
-      text: '  ' + dim(cell('за рядок', 17)) + cell(usd(b.totalCostUSD / lines), 6, true)
-        + dim('  +' + (b.totalLinesAdded || 0) + ' −' + (b.totalLinesRemoved || 0) + ' рядків'),
-    });
-  }
+  const rows = [statRow('рахунок', usd(b.totalCostUSD),
+    dim(models.map(([n, v]) => n + ' ' + usd(v)).join('  ·  ') || '—') + (at ? dim('  ·  станом на ' + hhmm(at)) : ''),
+    '1;33')];
+  // Two clocks, and the gap between them is the answer to where the hours went:
+  // the session was open far longer than the model was ever working, and the
+  // rest of it was us.
   if (hours > 0.01) {
-    // Three clocks, and the gap between them is the answer to where the hours
-    // went: the session was open far longer than the model was ever working.
-    const clocks = [usd(b.totalCostUSD / hours) + ' за годину', span(b.totalAPIDuration || 0) + ' в API'];
-    if (W() >= 92) clocks.push(span(b.totalToolDuration || 0) + ' в інструментах');
-    if (at) clocks.push('станом на ' + hhmm(at));
-    rows.push({
-      text: '  ' + dim(cell('час', 17)) + cell(span(b.totalDuration), 6, true) + dim('  ' + clocks.join('  ·  ')),
-    });
+    rows.push(statRow('за годину', usd(b.totalCostUSD / hours),
+      dim(span(b.totalDuration) + ' була відкрита, з них ' + span(b.totalAPIDuration || 0) + ' рахувала')));
+  }
+  if (lines) {
+    rows.push(statRow('за рядок коду', usd(b.totalCostUSD / lines),
+      dim('дописано ' + (b.totalLinesAdded || 0) + ', прибрано ' + (b.totalLinesRemoved || 0))));
   }
   return rows;
 }
 
 function priceRows(s) {
   const { parts, total } = priceOf(s);
-  const w = Math.max(8, Math.min(20, W() - 54));
+  const w = Math.max(8, Math.min(20, W() - NOTE - 30));
   const first = s.marks[0];
   const last = s.marks[s.marks.length - 1];
   const waste = wasteOf(s);
+  const inTools = [...s.tools.values()].reduce((a, e) => a + e.ms, 0);
+  const rows = [subRow('скільки сесія вже коштувала і скільки коштуватиме наступний хід')];
+  if (s.bill) rows.push(...moneyRows(s));
   // Without an invoice the only clock is the transcript's own span, split the
   // one way a transcript can split it: time inside a tool, and everything else —
   // the model writing, and the session waiting for a person.
-  const inTools = [...s.tools.values()].reduce((a, e) => a + e.ms, 0);
-  const rows = [
-    ...(s.bill ? moneyRows(s) : s.to > s.from ? [{
-      text: '  ' + dim(cell('час', 17)) + cell(span(s.to - s.from), 6, true)
-        + dim('  ' + span(inTools) + ' в інструментах  ·  ' + span(Math.max(0, s.to - s.from - inTools))
-          + ' модель і очікування'),
-    }] : []),
-    { text: '  ' + dim(cell('разом', 17)) + sgr('1', cell(num(total), 6, true)) + dim('  еквівалентних токенів входу') },
-    ...parts.map((p) => ({
-      text: '  ' + dim(cell(p.label, 17)) + cell(num(p.v), 6, true) + '  '
-        + sgr(p.colour, '█'.repeat(Math.round(p.v / (total || 1) * w)))
-        + dim('░'.repeat(Math.max(0, w - Math.round(p.v / (total || 1) * w))))
-        + dim('  ' + Math.round(p.v / (total || 1) * 100) + '%'),
-    })),
-  ];
+  else if (s.to > s.from) {
+    rows.push(statRow('час', span(s.to - s.from),
+      dim('з них ' + span(inTools) + ' в інструментах, решта — модель і очікування')));
+  }
   // The cost of one more turn is the context times the cache rate, and it is the
   // number that decides whether to carry on here or start again: it grows with
-  // every turn whether or not the turn was useful.
+  // every turn whether or not the turn was useful. Amber once it has doubled,
+  // because from there a fresh session doing the same work is cheaper.
   if (first && last && first.ctx) {
-    rows.push({
-      text: '  ' + dim(cell('один хід', 17)) + cell(num(last.ctx * RATE.read), 6, true)
-        + dim('  на початку ' + num(first.ctx * RATE.read) + '  ·  дорожче у ' + times(last.ctx / first.ctx)),
-    });
+    const k = last.ctx / first.ctx;
+    rows.push(statRow('наступний хід', num(last.ctx * RATE.read),
+      dim('дорожчий за перший (' + num(first.ctx * RATE.read) + ') у ' + times(k)),
+      k >= 4 ? '1;31' : k >= 2 ? '1;33' : '1'));
   }
+  rows.push({ text: '' });
+  rows.push(statRow('усього', num(total), dim('токенів, зведених до ціни звичайного входу')));
+  // The three shares, each explained where it stands: the names are the pricing
+  // vocabulary and mean nothing to anyone who has not read the price list.
+  const bar = (v) => sgr(v.colour, '█'.repeat(Math.round(v.v / (total || 1) * w)))
+    + dim('░'.repeat(Math.max(0, w - Math.round(v.v / (total || 1) * w))))
+    + dim('  ' + Math.round(v.v / (total || 1) * 100) + '%  ' + v.note);
+  for (const p of parts) rows.push(statRow(p.label, num(p.v), bar(p)));
   // Failures are counted twice over in ЗБОЇ and once more in the tool table, so
   // what is left to say here is the one kind of waste nothing else shows: the
   // same file read again, and paid for again.
   if (waste.files) {
-    rows.push({
-      text: '  ' + dim(cell('намарно', 17)) + cell(num(waste.reread), 6, true)
-        + dim('  ' + plural(waste.files, 'файл', 'файли', 'файлів') + ' прочитано двічі'),
-    });
+    rows.push(statRow('дарма', num(waste.reread),
+      dim(plural(waste.files, 'файл', 'файли', 'файлів') + ' прочитано вдруге — ті самі токени оплачено двічі'), '33'));
   }
   return rows;
 }
@@ -2338,26 +2359,23 @@ function priceRows(s) {
 function makeupRows(s, h, n) {
   const grown = Math.max(0, s.ctx - s.base);
   const fromTools = Math.min(grown, Math.round(s.toolChars / 4));
+  const w = Math.max(6, Math.min(24, W() - NOTE - 34));
   const bar = (v) => {
-    const w = Math.max(6, Math.min(24, W() - 46));
     const on = s.ctx ? Math.round(v / s.ctx * w) : 0;
     return dim('█'.repeat(on) + '░'.repeat(Math.max(0, w - on)));
   };
-  const line = (label, v, note) => ({
-    text: '  ' + dim(cell(label, 11)) + cell(num(v), 6, true) + '  ' + bar(v) + dim('  ' + note),
-  });
+  const line = (label, v, note) => statRow(label, num(v), bar(v) + dim('  ' + note));
   return [
-    { text: '  ' + dim(cell('контекст', 11)) + sgr('1', cell(num(s.ctx), 6, true)) + dim('  токенів у промті останнього ходу') },
-    line('база', s.base, 'системний промт, інструменти, пам\'ять'),
-    line('розмова', grown, 'за ' + plural(s.rounds.length, 'запит', 'запити', 'запитів')),
-    line('з неї', fromTools, 'відповіді інструментів, приблизно'),
+    subRow('що лежить у вікні моделі просто зараз і як воно туди набралось'),
+    statRow('у вікні', num(s.ctx), dim('стільки надсилається наново на кожному ході')),
+    line('стартовий пакет', s.base, 'системний промт, інструменти, пам’ять'),
+    line('наша розмова', grown, 'за ' + plural(s.rounds.length, 'запит', 'запити', 'запитів')),
+    line('з неї інструменти', fromTools, 'що повернули Bash, Read і решта'),
     // Hooks are invisible in the window and loud in the transcript: on a machine
     // with a plugin suite installed they are most of what gets attached.
-    ...(s.attach ? [{
-      text: '  ' + dim(cell('гуки', 11)) + cell(s.hooks, 6, true) + '  '
-        + dim(Math.round(s.hooks / s.attach * 100) + '% усіх вкладень'
-          + (s.hookCtx ? '  ·  ' + s.hookCtx + ' дописали контекст' : '')),
-    }] : []),
+    ...(s.attach ? [statRow('гуки плагінів', String(s.hooks),
+      dim(Math.round(s.hooks / s.attach * 100) + '% усього, що дописано у вікно повз розмову'
+        + (s.hookCtx ? ', ' + s.hookCtx + ' з них текстом' : '')))] : []),
     // And the same number over the session: a staircase climbing to the right is
     // a window carrying everything it ever read, a cliff is a compaction. It
     // belongs under the figures it is the history of, not in a block of its own.
@@ -2384,12 +2402,16 @@ function askRows(s) {
   const room = Math.max(12, W() - 34);
   const mid = rows.length ? [...rows].sort((a, b) => a.cost - b.cost)[rows.length >> 1] : null;
   return [
+    subRow('які прохання коштували найбільше — і скільки коштує звичайне'),
     ...top.map((r) => ({
-      text: '  ' + dim(hhmm(new Date(r.at).toISOString())) + cell(num(r.cost), 7, true)
-        + dim(cell(r.turns + ' х', 5, true)) + dim(cell(r.to && r.at ? span(r.to - r.at) : '', 8, true))
-        + '  ' + clip(r.text, room),
+      // The columns line up with every other block: what it cost, then how much
+      // work it took, then the ask itself where the explanations sit elsewhere.
+      text: '  ' + dim(cell(hhmm(new Date(r.at).toISOString()) + ' · ' + r.turns + ' х', GUT))
+        + sgr('1', cell(num(r.cost), VAL, true))
+        + dim(cell(r.to && r.at ? span(r.to - r.at) : '', 8, true)) + '  ' + clip(r.text, room),
     })),
-    ...(mid ? [{ text: dim('  медіана запиту ' + num(mid.cost) + ' токенів  ·  ' + num(rows.reduce((a, r) => a + r.cost, 0) / Math.max(1, rows.length)) + ' у середньому') }] : []),
+    ...(mid ? [subRow('половина запитів дешевші за ' + num(mid.cost)
+      + '  ·  у середньому ' + num(rows.reduce((a, r) => a + r.cost, 0) / Math.max(1, rows.length)))] : []),
   ];
 }
 
