@@ -27,6 +27,7 @@ three hours, then the plan, media, files and links of the session it is followin
        ▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▃▃▃▃▃▃▃▃▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄▄
   NET                 ▁▃▄▅▆▇███▇▆▄▃▁
        ▁▁▁▁▁▁▁▁▂▂▃▄▅▆███████████████▇▆▅▄▃▃▂▁▁▁▁▁▁▁▁
+       −44 с             −22 с              зараз
 
                        RAM   CPU
   chrome         ×24    3.8G    5%  claude ×8
@@ -91,7 +92,9 @@ levels in a single row, which is what lets a band be one or two rows tall and st
 what draws a floor under an idle series rather than a gap. Traffic has no ceiling to be graded
 against: it keeps its own colour and is measured against the busiest moment on show, with the actual
 rate in the numbers above. Those numbers are the current reading of every series. VRAM comes from
-`nvidia-smi`, and where that is not on PATH the band and its number are both absent.
+`nvidia-smi`, and where that is not on PATH the band and its number are both absent. Under the last
+band is how far back the chart reaches — a few marks counting backwards from now, which at a typical
+pane width is a minute or two, and twice that in the views that pack two samples into every cell.
 
 `V`, or a click anywhere on the chart, switches how it is drawn, and the rule says which of the five
 is up. **Колонки** is the default above, and the only one that says how hard each part was pushed
@@ -131,98 +134,68 @@ line, which is exactly when you want to know.
 **The spend screen** opens on `A`, and answers where a session's tokens and minutes went.
 
 ```
-── ВИТРАТИ · Сайдбар ──────────────────────────
-  контекст   437k  токенів у промті останнього ходу
-  кеш        99% зчитано  809k записано в кеш
-  вихід      484k  думання 253k  ·  ходів 479
-  час        2 год  транскрипт 5M  ·  opus-5
-  з них      18 хв в інструментах  ·  1 год 42 хв модель і очікування
-  ⏱ Bash висить 6 хв
-
-── КОНТЕКСТ ────────────────────────────────
-  437k┤                              ╭──────
-      │                ╭────────────╯
-      │   ╭─────────╯
-     0┤───╯
-
-── ПЕРЕБІГ ─────────────────────────────────
-  вихід ███▓▓▒░░▒▓██▓▒░░░▒▓███▓▒░
-  збої  ░░░░█░░░░░░░░░██░░░░░░░░░
-  09:00                        11:00
-
-── ІНСТРУМЕНТИ ─────────────────────────────
-                     виклики   вихід     час   збої
-  Bash                   179     36k   12 хв      7
-  Edit                    98      4k    1 хв      2
-  WebSearch                2      1k    14 с      ·
-
-── ЦІНА · з рахунку ───────────────────────
+── ЦІНА · Сайдбар ── з рахунку · opus-5 ────
   рахунок          $64.03  opus-5 $63.97  ·  haiku-4-5 $0.06
   за рядок          $0.04  +1562 −185 рядків
-  за годину         $4.89  13 год сесії  ·  1 год 15 хв в API  ·  12 хв в інструментах
-  станом на        22:06  ·  далі рахунок оцінений
-  разом             15.3M  еквівалентних токенів входу
-  кеш перечитано    11.7M  ███████████████░░░░░  76%
-  вихід і думання    2.2M  ███░░░░░░░░░░░░░░░░░  14%
-  запис у кеш        1.4M  ██░░░░░░░░░░░░░░░░░░  9%
-  один хід            27k  на початку 6k  ·  дорожче в 4.1 раза
-  намарно          12 викликів впало намарно
+  час         13 год 5 хв  $4.89 за годину · 1 год 15 хв в API · станом на 22:06
+  разом             16.7M  еквівалентних токенів входу
+  кеш перечитано    12.8M  ███████████████░░░░░  77%
+  вихід і думання    2.4M  ███░░░░░░░░░░░░░░░░░  14%
+  запис у кеш        1.5M  ██░░░░░░░░░░░░░░░░░░  9%
+  один хід            33k  на початку 6k  ·  дорожче у 5 разів
+  намарно            120k  3 файли прочитано двічі
 
-── ЦІНА ХОДУ 455 ──────────────────────────
-  ціна              ▁▅▄▃▁▃▃▅▇█▅      ▇   ▅
-         ▁▁ ▅▁▂▆▂▃▇█▄▆█▅██▆▇███████   ▄ ▆ █
-       ▂ ▁▅▇▂▃▆▄▃▅▇██▇▇████████████ █ █ █▂▃█
-       █▆▄▃▅▄█▅▆█████████████████████████████
-       29k на початку  →  33k наприкінці  ·  пік 59k
-  час  медіана 4:27 · p90 7:51 · найдовший 12:51 · 40% довші за 5 хв
+── ПЕРЕБІГ 498 ходів ───────────────────────
+  ціна              ▁ ▂ ▁▂▄▂▁▂▃▂▅█▇     ▆  ▅
+         ▁▁  ▅▁▆▁▁▃▅█▄▄▆█▆▆█▆█████████  ▃ ▂ █  █▂
+       ▁   ▁▇▄▂▁▆▄▃▂▃▄▆▇██▆▇▇▆█████████  █ █  █▂▃▇
+       █▁▃▁▁▆▄▂▄▄▄▇▆▅▅█▆█▇█████████████▅▂▅▄█▂█▆▆██
+       ████████████████████████████████████████████
+  збої   ░░░░░█░░░░░░░░░░██░░░░░░░░░█░░░░░░░░░░░░░
+       29 09:00        29 10:47      30 12:15   31 10:40
+       хід 25k → 39k  ·  пік 60k
+       хід медіана 4:34 · p90 8:26 · найдовший 12:51 · 42% довші за 5 хв
 
-── СКЛАД КОНТЕКСТУ ──────────────────────
-  база          65k  ███░░░░░░░░░  системний промт, інструменти, пам'ять
-  розмова      433k  ██████████░░  за 20 запитів
-  з неї         51k  ██░░░░░░░░░░  відповіді інструментів, приблизно
-  гуки         2134  81% усіх вкладень  ·  238 дописали контекст
+── КОНТЕКСТ ────────────────────────────────
+  контекст     326k  токенів у промті останнього ходу
+  база          65k  █████░░░░░░░  системний промт, інструменти, пам'ять
+  розмова      261k  ███████████░  за 33 запити
+  з неї         97k  ████░░░░░░░░  відповіді інструментів, приблизно
+  гуки          2331  81% усіх вкладень  ·  267 дописали контекст
+  507k┤                          ╭─────╮
+      │              ╭───────────╯     │
+      ┤   ╭──────────╯                 │        ╭───
+     0┤───╯                            ╰────────╯
+       29 09:00        29 10:47      30 12:15   31 10:40
 
-── ЗБОЇ ──────────────────────────────────
-  виняток у скрипті   4  ████░░░░░░  SyntaxWarning: invalid escape sequence…
+── ЗБОЇ ────────────────────────────────────
+  виняток у скрипті   5  ████░░░░░░  SyntaxWarning: invalid escape sequence…
   якір Edit не знайдено  2  ██░░░░░░░░  String to replace not found in file…
   синтаксис у команді   1  █░░░░░░░░░  unexpected EOF while looking for matching…
 
 ── НАЙДОРОЖЧІ ЗАПИТИ ──────────────────
-  10:40   170k 63 х   14 хв  думаю що ще корисного додати
-  09:28   119k 54 х    6 хв  ось тут відображаються всі файли — мене ціка…
-  медіана запиту 92k токенів  ·  87k у середньому
+  09:47   171k  8 х    2 хв  я мав на увазі покращеня-фічі сайдбару
+  10:40    98k 41 х   14 хв  думаю що ще корисного для роботи додати
+  медіана запиту 54k токенів  ·  60k у середньому
+
+── ІНСТРУМЕНТИ ─────────────────────────────
+  ⏱ Bash висить 6 хв
+                     виклики   вихід     час   збої
+  Bash                   294     80k   18 хв     10
+  Edit                   167      7k    2 хв      2
+  WebSearch                7      5k    1 хв      ·
 ```
 
-Four numbers say most of it. **Контекст** is the prompt of the newest turn — everything the model was
-handed on that one call, which is what fills up and what a compaction resets. **Кеш** is the share of
-those tokens that came out of the prompt cache rather than being written into it; a session sitting at
-99% is being extended, one that keeps dropping to the fifties is having its prefix rebuilt, which is
-where money goes without anything looking wrong. **Думання** is how much of the output was reasoning
-rather than answer. And a `⏱` row appears for a call that was dispatched and never came back — the
-difference between a session working and a session hung.
-
-The tool table is ranked by what came back, not by how often it was called: a tool used twice that
-returns a megabyte each time is the leak, and every list sorted by call count buries it under
-something called three hundred times. **Вихід** is the result size in tokens, four characters to one,
-near enough to rank on. **Час** is wall clock spent inside that tool, which is where a session's hours
-actually go. **Збої** counts results that came back as errors; a tool with a high count there is a
-retry loop nobody noticed.
-
-The bands are colour rather than shading — dark where the session was quiet, bright where it burned.
-
-КОНТЕКСТ is that first number drawn across the session, against its own peak. A staircase climbing
-to the right is a session carrying everything it has ever read; a cliff is a compaction. ПЕРЕБІГ puts
-the same span underneath as two bands — what was generated, and where results came back as errors —
-cut into as many slices as the pane is wide, so an hour of nothing looks like an hour of nothing. A
-bright patch in the lower band is a retry loop, sitting directly under the minutes that produced it.
+The screen runs top-level first and detail after it, and every block answers one question rather
+than repeating a number from another.
 
 ЦІНА opens in money whenever the session has written itself an invoice. Claude Code records one every
-so often — real dollars, split by model, with the lines it changed and three clocks: how long the
-session was open, how much of that the API was working, and how much was spent inside tools. The gap
-between the first clock and the second is where the hours went, and it is rarely the model. Because
-the invoice is written now and then rather than every turn, the block says the minute it was last
-true; after that the equivalents below carry on alone. A block header reading `з рахунку` means the
-money is measured, `оцінка` that this session has not written one yet.
+so often — real dollars split by model, the lines it changed, and three clocks: how long the session
+was open, how much of that the API was working, and how much went inside tools. The gap between the
+first clock and the second is where the hours went, and it is rarely the model. Because the invoice
+is written now and then rather than every turn, the row says the minute it was last true; after that
+the equivalents below carry on alone. The block header reads `з рахунку` when the money is measured
+and `оцінка` when this session has not written one yet, and carries the model beside it.
 
 Below the money the same bill is counted in one unit. A prompt token read out of cache costs a tenth
 of a fresh one, a token written into the cache a quarter more, and output five times input — the
@@ -230,37 +203,53 @@ ratios every Claude model is priced on — so adding them up in input-token equi
 of what was spent. On a long session that shape surprises people: three quarters of it is the same
 prompt being re-read on every single turn, and none of it is the answers. That is what the ОДИН ХІД
 line is for — the context times the cache rate, which is what the next turn will cost before it does
-anything. Four times what it cost at the start is not a session going wrong; it is a session that
-should have been two.
+anything. Five times what it cost at the start is not a session going wrong; it is a session that
+should have been two. НАМАРНО below it names the one waste nothing else on the screen shows: a file
+read a second time is the same tokens paid for twice.
 
-ЦІНА ХОДУ draws that climb instead of naming its endpoints. One column is a stretch of turns, as tall
-as what a turn in it was worth and coloured by how close that came to the session's own worst — green
-early, red where the window is full. It is cut by turn order rather than by the clock, because a
-session left open overnight would otherwise give every hour of silence a column and squeeze the work
-into one. A cliff in the middle is a compaction; a staircase with no cliff is the argument for
-starting again. Under it sits how long a turn actually takes, measured by Claude Code's own stopwatch
-rather than by the gaps between timestamps: the median, the ninetieth percentile, the worst one, and
-the share that ran over five minutes.
+ПЕРЕБІГ draws that climb rather than naming its endpoints, and puts the failures on the same axis. A
+column is a stretch of turns, as tall as what a turn in it was worth and coloured by how close that
+came to the session's own worst — green early, red where the window is full. The strip under it is
+where results came back as errors, so a retry loop sits directly beneath the price it was paid at. It
+is cut by turn order rather than by the clock: a session left open overnight would otherwise give
+every hour of silence a column of its own and squeeze the work into one. A cliff in the middle is a
+compaction; a staircase with no cliff is the argument for starting again. The last line is how long a
+turn actually takes, measured by Claude Code's own stopwatch rather than by the gaps between
+timestamps — the median, the ninetieth percentile, the worst one, and the share that ran over five
+minutes.
+
+КОНТЕКСТ answers what is in the window and then shows the same number over time, because the figures
+and their history are one subject and were never worth two blocks. The base is measured rather than
+guessed: it is the prompt of the very first turn, before anything had been said, so it is the system
+prompt, every tool definition and the memory files together. Everything above it is the conversation,
+and the share of that which came back from tools is an estimate at four characters to the token —
+enough to tell a window full of talk from a window full of output nobody read. Then the hook traffic,
+invisible in the window and loud in the transcript: on a machine with a plugin suite installed, four
+fifths of everything attached to the conversation is hook output. The chart under them is the window
+against its own peak — a staircase climbing to the right is a session carrying everything it ever
+read, a cliff is a compaction.
+
+Both charts carry a row of clock marks along the bottom, and both fall back to the day and the hour
+when the session ran past midnight, because the same time a day later reads as time running
+backwards.
 
 ЗБОЇ sorts failures by what they are rather than by which tool reported them. Six failed Bash calls
 say nothing; four of them being the same missing path says where the session was going wrong, and an
 Edit that lost its anchor twice says the file moved under it. Every pattern was read out of real
 transcripts on this machine.
 
-СКЛАД КОНТЕКСТУ is as far as a transcript can answer what the window is made of. The base is
-measured rather than guessed: it is the prompt of the very first turn, before anything had been
-said, so it is the system prompt, every tool definition and the memory files, together. Everything
-above it is the conversation, and the share of that which came back from tools is an estimate at
-four characters to the token — enough to tell a window full of talk from a window full of output
-nobody read. The last row is the hook traffic, which is invisible in the window and loud in the
-transcript: on a machine with a plugin suite installed, four fifths of everything attached to the
-conversation is hook output, and a fraction of that writes into the context itself.
-
-НАЙДОРОЖЧІ ЗАПИТИ ranks rounds rather than tools: one thing asked and everything the model did
-about it, by what it wrote plus what it had to write into the cache. The columns are that cost, how
-many turns it took and how long it ran, and the line is what was asked — which is how a round is
+НАЙДОРОЖЧІ ЗАПИТИ ranks rounds rather than tools: one thing asked and everything the model did about
+it, by what it wrote plus what it had to write into the cache. The columns are that cost, how many
+turns it took and how long it ran, and the line is what was asked — which is how a round is
 remembered, rather than by which tools it happened to use. The median and the mean under the table
 say whether one round was expensive or the whole session runs that way.
+
+ІНСТРУМЕНТИ is ranked by what came back, not by how often it was called: a tool used twice that
+returns a megabyte each time is the leak, and every list sorted by call count buries it under
+something called three hundred times. **Вихід** is the result size in tokens, four characters to one,
+near enough to rank on. **Час** is wall clock spent inside that tool. A `⏱` row above the table is a
+call that was dispatched and never came back — the difference between a session working and a session
+hung.
 
 One thing has to be said about how the counting works, because it is worth two thirds of every number
 on this screen. Claude Code writes an assistant message to the transcript more than once while the

@@ -393,7 +393,7 @@ assert.strictEqual(unix.vmUsed([
 // nothing between them look like a chart and read as a scatter of samples. The
 // axis is cut off first — it is drawn on every row and would answer for all of
 // them.
-const plot = (cpu, h, n) => eval('(function(){ const dim = (s) => s, sgr = (c, s) => s;'
+const plot = (cpu, h, n) => eval('(function(){ const dim = (s) => s, sgr = (c, s) => s, withAxis = (rows) => rows;'
   + ' const cell = (s, w, right) => (right ? String(s).padStart(w) : String(s).padEnd(w));'
   + ' const load = { cpu: ' + JSON.stringify(cpu) + ', ram: [], vram: [], net: [] };'
   + src.match(/const SERIES = [\s\S]*?\nfunction chart[\s\S]*?\n\}/)[0]
@@ -433,24 +433,39 @@ assert.deepStrictEqual(three.slice(4), [' 35:█', '35:▅35:█'],
 // Fewer turns than columns must leave the spare columns blank rather than draw a
 // floor under turns that do not exist.
 const pace = (marks, n, h) => eval('(function(){ const dim = (s) => s, sgr = (c, s) => s, clock = () => "";'
-  + ' const num = (v) => String(Math.round(v));'
+  + ' const num = (v) => String(Math.round(v)), hhmm = (t) => new Date(t).toISOString().slice(11, 16);'
   + ' const cell = (s, w, right) => (right ? String(s).padStart(w) : String(s).padEnd(w));'
+  + ' const heatStrip = (v, n) => " ".repeat(n);'
   + ' const s = { marks: ' + JSON.stringify(marks) + ', durs: [] };'
   + src.match(/const BARS = [\s\S]*?\nfunction barCell[\s\S]*?\n\}/)[0]
-  + src.match(/\nfunction paceRows[\s\S]*?\n\}/)[0]
-  + '\nreturn paceRows(s, ' + n + ', ' + h + ') })()');
+  + src.match(/\nfunction axisRow[\s\S]*?\n\}/)[0]
+  + src.match(/\nfunction timeAxis[\s\S]*?\n\}/)[0]
+  + src.match(/\nfunction byTurn[\s\S]*?\n\}/)[0]
+  + src.match(/\nfunction traceRows[\s\S]*?\n\}/)[0]
+  + '\nreturn traceRows(s, ' + h + ', ' + n + ') })()');
 
-const climb = Array.from({ length: 40 }, (_, i) => ({ eq: 1000 + i * 500 }));
+const t0 = Date.parse('2026-08-29T09:00:00Z');
+const climb = Array.from({ length: 40 }, (_, i) => ({ eq: 1000 + i * 500, err: 0, t: t0 + i * 60000 }));
 for (const cols of [40, 60, 100]) {
   const n = Math.max(12, cols - 8);
   const band = pace(climb, n, 3);
   for (const r of band.slice(0, 3)) {
     assert.strictEqual(width(r.text), 7 + n, 'a price band row must be the width of the pane, was ' + width(r.text));
   }
+  assert.strictEqual(width(band[3].text), 7 + n, 'and so must the time axis under it');
 }
-const sparse = pace([{ eq: 100 }, { eq: 400 }, { eq: 900 }], 12, 2);
+const sparse = pace([{ eq: 100, err: 0, t: t0 }, { eq: 400, err: 0, t: t0 + 1000 }, { eq: 900, err: 0, t: t0 + 2000 }], 12, 2);
 assert.strictEqual(strip(sparse[1].text).slice(7).replace(/[^ ]/g, '').length, 9,
   'with three turns and twelve columns, nine columns must stay empty');
+
+// A session that ran past midnight must not label its end with a smaller number
+// than its start: the same clock time a day later reads as time running
+// backwards, which is exactly what an axis must never do.
+const overnight = pace(
+  Array.from({ length: 40 }, (_, i) => ({ eq: 1000, err: 0, t: t0 + i * 3600000 })), 60, 2,
+).filter((r) => /\d\d:\d\d/.test(strip(r.text)))[0];
+assert.ok(/\d+ \d\d:\d\d/.test(strip(overnight.text)),
+  'an axis spanning more than a day must carry the day: ' + strip(overnight.text).trim());
 
 // ---- and no control character got baked into the source ----
 // A shell heredoc collapses the escapes in the text it writes: `\b` becomes a

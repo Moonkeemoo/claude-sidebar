@@ -1615,6 +1615,10 @@ const SERIES = [
   { key: 'net', label: 'NET', colour: '35', auto: true },
 ];
 
+// How many samples the pane actually holds, which is how far back its charts
+// reach: a pane opened a minute ago has a minute of history whatever its width.
+const filled = () => Math.max(0, ...SERIES.map((s) => load[s.key].length));
+
 function seriesData(s, n) {
   const raw = load[s.key].slice(-n);
   if (!s.auto) return raw;
@@ -1653,6 +1657,64 @@ function lineGrid(list, h, n) {
   return cells;
 }
 
+// A chart with no scale along the bottom is a shape rather than a reading: you
+// can see that something spiked and not when. One row of marks under the grid
+// fixes it, and one row is all there is to spare. Labels are placed at their own
+// column and never overwrite a neighbour — a mark that would collide is dropped,
+// because two labels sharing eight columns say less than one.
+function axisRow(pad, cols, ticks) {
+  const row = new Array(cols).fill(' ');
+  for (const t of ticks) {
+    const at = Math.max(0, Math.min(cols - t.text.length, t.at));
+    let free = true;
+    for (let i = Math.max(0, at - 1); i < Math.min(cols, at + t.text.length + 1); i++) if (row[i] !== ' ') free = false;
+    if (!free) continue;
+    for (let i = 0; i < t.text.length; i++) row[at + i] = t.text[i];
+  }
+  return { text: '  ' + ' '.repeat(Math.max(0, pad - 2)) + dim(row.join('')) };
+}
+
+// Marks by wall clock, for the charts whose columns are time. `timeAt` answers
+// what moment a column stands for; a repeated label is dropped rather than
+// printed twice, which is what a chart spanning four minutes would do.
+function timeAxis(pad, cols, timeAt) {
+  const count = Math.max(2, Math.min(5, Math.floor(cols / 13)));
+  const found = [];
+  for (let i = 0; i < count; i++) {
+    const at = Math.round(i * (cols - 1) / (count - 1));
+    const t = timeAt(at);
+    if (t) found.push({ at, t });
+  }
+  // A session that ran past midnight would otherwise end on a label smaller than
+  // the one before it, which reads as a mistake rather than as tomorrow.
+  const overnight = new Set(found.map((x) => new Date(x.t).getDate())).size > 1;
+  const ticks = [];
+  let last = '';
+  for (const x of found) {
+    const text = (overnight ? new Date(x.t).getDate() + ' ' : '') + hhmm(x.t);
+    if (text === last) continue;
+    last = text;
+    ticks.push({ at: x.at, text });
+  }
+  return axisRow(pad, cols, ticks);
+}
+
+// Marks by age, for the load chart, whose right edge is always now. `per` is how
+// many seconds one column covers, which is two in the views that pack a pair of
+// samples into every cell.
+function loadAxis(pad, cols, per, have) {
+  const first = Math.max(0, cols - Math.ceil(have / per));
+  if (cols - first < 12) return null;              // nothing to scale yet
+  const count = Math.max(2, Math.min(4, Math.floor((cols - first) / 14)));
+  const ticks = [];
+  for (let i = 0; i < count; i++) {
+    const at = Math.round(first + i * (cols - 1 - first) / (count - 1));
+    const age = Math.round((cols - 1 - at) * per);
+    ticks.push({ at, text: age < 3 ? 'зараз' : '−' + (age < 90 ? age + ' с' : Math.round(age / 60) + ' хв') });
+  }
+  return axisRow(pad, cols, ticks);
+}
+
 // The axis carries the scale, so the grid behind the lines can stay empty. Its
 // top label is whatever the full height means for this chart.
 function gridRows(cells, top, extra) {
@@ -1666,7 +1728,17 @@ function gridRows(cells, top, extra) {
 }
 
 function chart(h, n) {
-  return gridRows(lineGrid(SERIES.map((s) => ({ data: seriesData(s, n), colour: s.colour })), h, n), '100%', { chart: true });
+  const rows = gridRows(lineGrid(SERIES.map((s) => ({ data: seriesData(s, n), colour: s.colour })), h, n), '100%', { chart: true });
+  return withAxis(rows, 7, n, 1);
+}
+
+// Every load view ends with the same row of marks, because every one of them was
+// a shape without it: you could see that something spiked and not when. The row
+// belongs to the chart, so clicking it cycles the view like the rest of them.
+function withAxis(rows, pad, cols, per) {
+  const axis = loadAxis(pad, cols, per, filled());
+  if (axis) rows.push(Object.assign(axis, { chart: true }));
+  return rows;
 }
 
 // Columns answer a different question than the lines do: not which part of the
@@ -1707,7 +1779,7 @@ function columns(h, n) {
       });
     }
   }
-  return rows;
+  return withAxis(rows, 7, w, 1);
 }
 
 // Braille packs four rows of dots into a cell, so the same eight rows carry
@@ -1736,12 +1808,12 @@ function braille(h, n) {
     });
   }
   const mid = h >> 1;
-  return cells.map((row, r) => ({
+  return withAxis(cells.map((row, r) => ({
     chart: true,
     text: '  ' + dim(r === 0 ? '100' : r === mid ? ' 50' : r === h - 1 ? '  0' : '   ')
       + dim(r === 0 || r === mid || r === h - 1 ? '┤' : '│')
       + row.map((c) => (c ? sgr(c.colour, String.fromCharCode(0x2800 + c.bits)) : ' ')).join(''),
-  }));
+  })), 6, n, 2);
 }
 
 // The same history as colour instead of position: a row per series, a column a
@@ -1773,7 +1845,7 @@ function heatRGB(v) {
 // over the lower half as background, which doubles the history a row holds.
 function heat(n, dense) {
   n -= 1;                                     // the label is a column wider than the chart's axis
-  return SERIES.filter((s) => load[s.key].length).map((s) => {
+  return withAxis(SERIES.filter((s) => load[s.key].length).map((s) => {
     const data = seriesData(s, dense ? n * 2 : n);
     const cells = [];
     if (dense) {
@@ -1784,7 +1856,7 @@ function heat(n, dense) {
       for (const v of data) cells.push(heatCell(v));
     }
     return { chart: true, text: '  ' + dim(s.label.padEnd(4)) + ' ' + ' '.repeat(Math.max(0, n - cells.length)) + cells.join('') };
-  });
+  }), 7, n, dense ? 2 : 1);
 }
 
 // The chart takes about a third of the pane, and the numbers sit above it: a
@@ -2001,6 +2073,14 @@ function plural(n, one, few, many) {
 
 const num = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + 'M' : n >= 1000 ? Math.round(n / 1000) + 'k' : String(Math.round(n)));
 
+// "у 5 разів" against "у 4.9 раза": a whole number takes the count, a fraction
+// takes the singular, and getting it wrong is the kind of thing that makes a
+// pane read as machine output.
+function times(k) {
+  const one = k.toFixed(1);
+  return one.endsWith('.0') ? plural(Math.round(k), 'раз', 'рази', 'разів') : one + ' раза';
+}
+
 function span(ms) {
   const m = Math.floor(ms / 60000);
   if (m < 60) return m + ' хв';
@@ -2023,38 +2103,19 @@ function usd(v) {
   return '$' + (v < 100 ? v.toFixed(2) : Math.round(v));
 }
 
-// What the session has spent, and what it is still waiting on. The cache share
-// is the one number that says whether the prompt is being rebuilt from scratch:
-// tokens read out of cache cost a tenth of tokens written into it.
-function spentRows(s) {
-  const cached = s.read + s.wrote;
-  const inTools = [...s.tools.values()].reduce((a, e) => a + e.ms, 0);
+// Ranked by what came back, not by how often it was called: a tool used twice
+// that returns a megabyte each time is the leak, and it sits below a tool called
+// three hundred times in every list sorted the other way. A call that was
+// dispatched and never came back goes on top, because that is the difference
+// between a session working and a session hung.
+function toolRows(s) {
+  const rows = [...s.tools.values()].sort((a, b) => b.bytes - a.bytes).slice(0, 8);
   const stuck = [...s.open.values()].filter((o) => o.at && Date.now() - o.at > 60000)
     .sort((a, b) => a.at - b.at);
   return [
-    { text: '  ' + dim(cell('контекст', 11)) + sgr('1', num(s.ctx)) + dim('  токенів у промті останнього ходу') },
-    { text: '  ' + dim(cell('кеш', 11)) + (cached ? Math.round(s.read / cached * 100) + '% зчитано' : '—')
-      + dim('  ' + num(s.wrote) + ' записано в кеш') },
-    { text: '  ' + dim(cell('вихід', 11)) + num(s.out) + dim('  думання ' + num(s.think) + '  ·  ходів ' + s.turns) },
-    { text: '  ' + dim(cell('час', 11)) + (s.to > s.from ? span(s.to - s.from) : '—')
-      + dim('  транскрипт ' + weigh(s.bytes) + (s.model ? '  ·  ' + s.model : '')) },
-    // Wall clock split the only way a transcript can split it: time spent inside
-    // a tool, and everything else — the model writing, and the session waiting
-    // for a person.
-    { text: '  ' + dim(cell('з них', 11)) + span(inTools) + dim(' в інструментах  ·  ')
-      + span(Math.max(0, s.to - s.from - inTools)) + dim(' модель і очікування') },
     ...stuck.slice(0, 3).map((o) => ({
       text: '  ' + sgr('33', '⏱ ' + o.name + ' висить ' + span(Date.now() - o.at)),
     })),
-  ];
-}
-
-// Ranked by what came back, not by how often it was called: a tool used twice
-// that returns a megabyte each time is the leak, and it sits below a tool called
-// three hundred times in every list sorted the other way.
-function toolRows(s) {
-  const rows = [...s.tools.values()].sort((a, b) => b.bytes - a.bytes).slice(0, 8);
-  return [
     { text: dim('  ' + cell('', 18) + cell('виклики', 8, true) + cell('вихід', 8, true) + cell('час', 8, true) + cell('збої', 7, true)) },
     ...rows.map((e) => ({
       text: '  ' + cell(clip(e.name, 18), 18) + cell(e.calls, 8, true) + cell(num(e.bytes / 4), 8, true)
@@ -2064,45 +2125,79 @@ function toolRows(s) {
   ];
 }
 
-// The session cut into as many slices as the pane is wide, so a strip under the
-// chart is time rather than turns: an hour of nothing looks like an hour of
-// nothing, which counting turns would hide.
-function slices(marks, n, pick, keepPeak) {
-  const out = new Array(n).fill(0);
-  const from = marks[0] ? marks[0].t : 0;
-  const to = marks[marks.length - 1] ? marks[marks.length - 1].t : 0;
-  if (!(to > from)) return out;
-  for (const m of marks) {
-    const i = Math.min(n - 1, Math.floor((m.t - from) / (to - from) * n));
-    const v = pick(m);
-    out[i] = keepPeak ? Math.max(out[i], v) : out[i] + v;
+// The session cut into as many columns as the pane is wide, by turn order rather
+// than by the clock. Cutting by the clock gives every hour a session was left
+// open a column of its own and squeezes the work into one, which is how a chart
+// of a session that ran overnight ends up being a chart of the night. The time
+// each column covers is carried alongside, so the axis can still speak in hours.
+function byTurn(marks, n, pick, how) {
+  const out = new Array(n).fill(null);
+  const at = new Array(n).fill(0);
+  for (let i = 0; i < n; i++) {
+    const from = Math.floor(i * marks.length / n);
+    const to = Math.floor((i + 1) * marks.length / n);
+    if (to <= from) continue;
+    let v = 0;
+    for (let j = from; j < to; j++) {
+      const x = pick(marks[j]);
+      v = how === 'max' ? Math.max(v, x) : v + x;
+    }
+    out[i] = how === 'avg' ? v / (to - from) : v;
+    // A dispatched agent writes its own turns into this file with its own
+    // timestamps, so file order and clock order are not the same thing. The axis
+    // has to run forwards whatever the records do, or it reads as a mistake.
+    at[i] = Math.max(marks[from].t, i ? at[i - 1] : 0);
   }
-  // A slice with no turn in it inherits the last reading, so the context line
-  // holds through a pause instead of falling to the floor and back.
-  if (keepPeak) for (let i = 1; i < n; i++) if (!out[i]) out[i] = out[i - 1];
-  return out;
+  // A column with no turn in it inherits the reading before it, so a level holds
+  // across a gap instead of falling to the floor and back.
+  if (how === 'max') for (let i = 1; i < n; i++) if (out[i] == null) out[i] = out[i - 1];
+  return { out, at };
 }
 
-// Where the context went over the session, drawn against its own peak. The drops
-// are compactions; a long climb with no drop is a session that has been carrying
-// everything it ever read.
-function ctxRows(s, h, n) {
-  const peak = Math.max(...s.marks.map((m) => m.ctx), 1);
-  const line = slices(s.marks, n, (m) => m.ctx, true).map((v) => v / peak);
-  return gridRows(lineGrid([{ data: line, colour: '36' }], h, n), num(peak));
-}
-
-// Two bands over the same span: what was generated, and where results came back
-// as errors. Bright patches in the second one are retry loops, and they sit
-// under the minutes that produced them.
-function bandRows(s, n) {
-  const room = n - 3;
-  return [
-    { text: '  ' + dim(cell('вихід', 6)) + heatStrip(slices(s.marks, room, (m) => m.out), room) },
-    { text: '  ' + dim(cell('збої', 6)) + heatStrip(slices(s.marks, room, (m) => m.err), room) },
-    { text: dim('  ' + cell(s.from ? hhmm(new Date(s.from).toISOString()) : '', 6)
-      + cell(s.to ? hhmm(new Date(s.to).toISOString()) : '', room, true)) },
-  ];
+// How the session unfolded, on one axis: what a turn cost as it went on, and
+// where results came back as errors. The two belong together — a run of failures
+// is paid for at whatever a turn costs by the time it happens — and the price
+// climb is the argument for starting again, which is the second thing worth
+// knowing after what the session cost at all.
+function traceRows(s, h, n) {
+  const eq = byTurn(s.marks, n, (m) => m.eq, 'avg');
+  const err = byTurn(s.marks, n, (m) => m.err, 'sum');
+  const eqPeak = Math.max(...eq.out.filter((v) => v != null), 1);
+  const rows = [];
+  for (let r = 0; r < h; r++) {
+    rows.push({
+      text: '  ' + dim(cell(r ? '' : 'ціна', 4)) + ' ' + eq.out.map((v) => {
+        if (v == null) return ' ';
+        const ch = barCell(v / eqPeak, r, h);
+        return ch === ' ' ? ch : sgr(GRADE(v / eqPeak), ch);
+      }).join(''),
+    });
+  }
+  if (err.out.some((v) => v)) {
+    rows.push({ text: '  ' + dim(cell('збої', 4)) + ' ' + heatStrip(err.out.map((v) => v || 0), n) });
+  }
+  const axis = timeAxis(7, n, (c) => eq.at[c]);
+  if (axis) rows.push(axis);
+  const live = eq.out.filter((v) => v != null);
+  if (live.length > 1) {
+    rows.push({
+      text: '  ' + dim(cell('', 5)) + dim('хід ' + num(live[0]) + ' → ' + num(live[live.length - 1])
+        + '  ·  пік ' + num(eqPeak)),
+    });
+  }
+  // How long a turn takes by Claude Code's own stopwatch, which is the only
+  // measure here that is not derived from the timestamps around it.
+  if (s.durs.length > 2) {
+    const d = [...s.durs].sort((a, b) => a - b);
+    const q = (p) => d[Math.min(d.length - 1, Math.floor(d.length * p))];
+    const over = d.filter((x) => x > 300000).length;
+    rows.push({
+      text: '  ' + dim(cell('', 5)) + dim('хід медіана ') + clock(q(0.5)) + dim(' · p90 ') + clock(q(0.9))
+        + dim(' · найдовший ') + clock(d[d.length - 1])
+        + dim('  ·  ' + Math.round(over / d.length * 100) + '% довші за 5 хв'),
+    });
+  }
+  return rows;
 }
 
 const ASK_N = 6;                   // rounds shown
@@ -2177,14 +2272,13 @@ function moneyRows(s) {
   if (hours > 0.01) {
     // Three clocks, and the gap between them is the answer to where the hours
     // went: the session was open far longer than the model was ever working.
-    const clocks = [span(b.totalDuration) + ' сесії', span(b.totalAPIDuration || 0) + ' в API'];
+    const clocks = [usd(b.totalCostUSD / hours) + ' за годину', span(b.totalAPIDuration || 0) + ' в API'];
     if (W() >= 92) clocks.push(span(b.totalToolDuration || 0) + ' в інструментах');
+    if (at) clocks.push('станом на ' + hhmm(at));
     rows.push({
-      text: '  ' + dim(cell('за годину', 17)) + cell(usd(b.totalCostUSD / hours), 6, true)
-        + dim('  ' + clocks.join('  ·  ')),
+      text: '  ' + dim(cell('час', 17)) + cell(span(b.totalDuration), 6, true) + dim('  ' + clocks.join('  ·  ')),
     });
   }
-  if (at) rows.push({ text: '  ' + dim(cell('станом на', 17)) + dim(hhmm(at) + '  ·  далі рахунок оцінений') });
   return rows;
 }
 
@@ -2194,8 +2288,16 @@ function priceRows(s) {
   const first = s.marks[0];
   const last = s.marks[s.marks.length - 1];
   const waste = wasteOf(s);
+  // Without an invoice the only clock is the transcript's own span, split the
+  // one way a transcript can split it: time inside a tool, and everything else —
+  // the model writing, and the session waiting for a person.
+  const inTools = [...s.tools.values()].reduce((a, e) => a + e.ms, 0);
   const rows = [
-    ...(s.bill ? moneyRows(s) : []),
+    ...(s.bill ? moneyRows(s) : s.to > s.from ? [{
+      text: '  ' + dim(cell('час', 17)) + cell(span(s.to - s.from), 6, true)
+        + dim('  ' + span(inTools) + ' в інструментах  ·  ' + span(Math.max(0, s.to - s.from - inTools))
+          + ' модель і очікування'),
+    }] : []),
     { text: '  ' + dim(cell('разом', 17)) + sgr('1', cell(num(total), 6, true)) + dim('  еквівалентних токенів входу') },
     ...parts.map((p) => ({
       text: '  ' + dim(cell(p.label, 17)) + cell(num(p.v), 6, true) + '  '
@@ -2210,67 +2312,16 @@ function priceRows(s) {
   if (first && last && first.ctx) {
     rows.push({
       text: '  ' + dim(cell('один хід', 17)) + cell(num(last.ctx * RATE.read), 6, true)
-        + dim('  на початку ' + num(first.ctx * RATE.read) + '  ·  дорожче в '
-          + (last.ctx / first.ctx).toFixed(1).replace('.0', '') + ' раза'),
+        + dim('  на початку ' + num(first.ctx * RATE.read) + '  ·  дорожче у ' + times(last.ctx / first.ctx)),
     });
   }
-  if (waste.files || waste.fails) {
-    const bits = [];
-    if (waste.files) bits.push(plural(waste.files, 'файл', 'файли', 'файлів') + ' перечитано, ~' + num(waste.reread));
-    if (waste.fails) bits.push(plural(waste.fails, 'виклик', 'виклики', 'викликів') + ' впало намарно');
-    rows.push({ text: '  ' + dim(cell('намарно', 17)) + dim(bits.join('  ·  ')) });
-  }
-  return rows;
-}
-
-// The price of one turn across the session, sliced by time the way the bands
-// above are. Early turns are cheap because the window is small; the same work at
-// the end of a long session costs several times more, and that climb is the
-// whole argument for starting a new session. Graded against this session's own
-// worst stretch, so the colour says how far up the climb a moment is.
-function paceRows(s, n, h) {
-  // Sliced by turn order rather than by the clock: a session left open overnight
-  // would give every hour of silence a column of its own and squeeze the work
-  // into one. The question is whether the hundredth turn costs more than the
-  // first, and that is asked in turns.
-  const marks = s.marks;
-  const avg = new Array(n).fill(null);
-  for (let i = 0; i < n; i++) {
-    const from = Math.floor(i * marks.length / n);
-    const to = Math.floor((i + 1) * marks.length / n);
-    if (to <= from) continue;                 // more columns than turns to fill them
-    let sum = 0;
-    for (let j = from; j < to; j++) sum += marks[j].eq;
-    avg[i] = sum / (to - from);
-  }
-  const live = avg.filter((v) => v != null);
-  const peak = Math.max(...live, 1);
-  const rows = [];
-  for (let r = 0; r < h; r++) {
+  // Failures are counted twice over in ЗБОЇ and once more in the tool table, so
+  // what is left to say here is the one kind of waste nothing else shows: the
+  // same file read again, and paid for again.
+  if (waste.files) {
     rows.push({
-      text: '  ' + dim(cell(r ? '' : 'ціна', 4)) + ' ' + avg.map((v) => {
-        if (v == null) return ' ';
-        const ch = barCell(v / peak, r, h);
-        return ch === ' ' ? ch : sgr(GRADE(v / peak), ch);
-      }).join(''),
-    });
-  }
-  if (live.length > 1) {
-    rows.push({
-      text: '  ' + dim(cell('', 5)) + dim(num(live[0]) + ' на початку  →  ' + num(live[live.length - 1])
-        + ' наприкінці  ·  пік ' + num(peak)),
-    });
-  }
-  // How long a turn takes by Claude Code's own stopwatch, which is the only
-  // measure here that is not derived from timestamps around it.
-  if (s.durs.length > 2) {
-    const d = [...s.durs].sort((a, b) => a - b);
-    const at = (q) => d[Math.min(d.length - 1, Math.floor(d.length * q))];
-    const over = d.filter((x) => x > 300000).length;
-    rows.push({
-      text: '  ' + dim(cell('час', 4)) + ' ' + dim('медіана ') + clock(at(0.5)) + dim('  ·  p90 ') + clock(at(0.9))
-        + dim('  ·  найдовший ') + clock(d[d.length - 1])
-        + dim('  ·  ' + Math.round(over / d.length * 100) + '% довші за 5 хв'),
+      text: '  ' + dim(cell('намарно', 17)) + cell(num(waste.reread), 6, true)
+        + dim('  ' + plural(waste.files, 'файл', 'файли', 'файлів') + ' прочитано двічі'),
     });
   }
   return rows;
@@ -2281,7 +2332,7 @@ function paceRows(s, n, h) {
 // been said. The rest is the conversation, and the share of it that came back
 // from tools is an estimate at four characters to the token — good enough to
 // answer whether the window is full of talk or full of output nobody read.
-function makeupRows(s) {
+function makeupRows(s, h, n) {
   const grown = Math.max(0, s.ctx - s.base);
   const fromTools = Math.min(grown, Math.round(s.toolChars / 4));
   const bar = (v) => {
@@ -2293,6 +2344,7 @@ function makeupRows(s) {
     text: '  ' + dim(cell(label, 11)) + cell(num(v), 6, true) + '  ' + bar(v) + dim('  ' + note),
   });
   return [
+    { text: '  ' + dim(cell('контекст', 11)) + sgr('1', cell(num(s.ctx), 6, true)) + dim('  токенів у промті останнього ходу') },
     line('база', s.base, 'системний промт, інструменти, пам\'ять'),
     line('розмова', grown, 'за ' + plural(s.rounds.length, 'запит', 'запити', 'запитів')),
     line('з неї', fromTools, 'відповіді інструментів, приблизно'),
@@ -2303,7 +2355,21 @@ function makeupRows(s) {
         + dim(Math.round(s.hooks / s.attach * 100) + '% усіх вкладень'
           + (s.hookCtx ? '  ·  ' + s.hookCtx + ' дописали контекст' : '')),
     }] : []),
+    // And the same number over the session: a staircase climbing to the right is
+    // a window carrying everything it ever read, a cliff is a compaction. It
+    // belongs under the figures it is the history of, not in a block of its own.
+    ...ctxChart(s, h, n),
   ];
+}
+
+function ctxChart(s, h, n) {
+  if (s.marks.length < 3 || h < 3) return [];
+  const ctx = byTurn(s.marks, n, (m) => m.ctx, 'max');
+  const peak = Math.max(...ctx.out.filter((v) => v != null), 1);
+  const rows = gridRows(lineGrid([{ data: ctx.out.map((v) => (v || 0) / peak), colour: '36' }], h, n), num(peak));
+  const axis = timeAxis(7, n, (c) => ctx.at[c]);
+  if (axis) rows.push(axis);
+  return rows;
 }
 
 // Rounds, by what they cost: everything the model wrote plus everything it had
@@ -2332,19 +2398,17 @@ function renderStats() {
   let bytes = 0; try { bytes = fs.statSync(file).size; } catch { }
   const title = (bytes && titleOf(file, bytes)) || path.basename(file, '.jsonl').slice(0, 8);
   if (!s) {
-    layout(out, [{ key: 'ВИТРАТИ', label: 'ВИТРАТИ', items: [], count: '', empty: 'рахую транскрипт…' }], H() - 2);
+    layout(out, [{ key: 'ЦІНА', label: 'ЦІНА', items: [], count: '', empty: 'рахую транскрипт…' }], H() - 2);
   } else {
     const n = Math.max(12, W() - 7);
     const h = Math.max(3, Math.min(7, Math.round((H() - 2) * 0.18)));
     layout(out, [
-      { key: 'ВИТРАТИ', label: clip('ВИТРАТИ · ' + title, 40), items: spentRows(s), count: '' },
-      ...(s.marks.length > 1 ? [
-        { key: 'КОНТЕКСТ', label: 'КОНТЕКСТ', items: ctxRows(s, h, n), count: '' },
-        { key: 'ПЕРЕБІГ', label: 'ПЕРЕБІГ', items: bandRows(s, n), count: '' },
-      ] : []),
-      ...(s.turns ? [{ key: 'ЦІНА', label: 'ЦІНА', items: priceRows(s), count: s.bill ? 'з рахунку' : 'оцінка' }] : []),
-      ...(s.marks.length > 2 ? [{ key: 'ХОДИ', label: 'ЦІНА ХОДУ', items: paceRows(s, n, Math.max(2, h - 2)), count: String(s.turns) }] : []),
-      ...(s.base ? [{ key: 'СКЛАД', label: 'СКЛАД КОНТЕКСТУ', items: makeupRows(s), count: '' }] : []),
+      ...(s.turns ? [{
+        key: 'ЦІНА', label: clip('ЦІНА · ' + title, 40),
+        items: priceRows(s), count: (s.bill ? 'з рахунку' : 'оцінка') + (s.model ? '  ·  ' + s.model : ''),
+      }] : []),
+      ...(s.marks.length > 2 ? [{ key: 'ПЕРЕБІГ', label: 'ПЕРЕБІГ', items: traceRows(s, Math.max(2, h - 2), n), count: plural(s.turns, 'хід', 'ходи', 'ходів') }] : []),
+      ...(s.base ? [{ key: 'КОНТЕКСТ', label: 'КОНТЕКСТ', items: makeupRows(s, h, n), count: '' }] : []),
       ...(s.errs.size ? [{ key: 'ЗБОЇ', label: 'ЗБОЇ', items: errRows(s), count: '' }] : []),
       ...(s.rounds.length ? [{ key: 'ЗАПИТИ', label: 'НАЙДОРОЖЧІ ЗАПИТИ', items: askRows(s), count: '' }] : []),
       { key: 'ІНСТРУМЕНТИ', label: 'ІНСТРУМЕНТИ', items: toolRows(s), count: '' },
