@@ -62,9 +62,18 @@ for (const [cols, rows] of [[40, 12], [50, 20], [60, 22], [76, 30], [120, 50]]) 
 // ---- the picker highlights the first session, on the row below the header ----
 const pick = render('pick');
 assert.ok(/СЕСІЇ/.test(pick.lines[0]), 'row 1 is not the session header: ' + strip(pick.lines[0]));
-assert.deepStrictEqual(
-  pick.hits['1'], { session: 0 },
-  'the row below the header must be session 0, not ' + JSON.stringify(pick.hits['1'])
+// Anchored on the marker rather than on row 1: a block explanation above the
+// rows moves them down, and hard-coding the index only tests the header height.
+const first = Object.entries(pick.hits).find(([, h]) => h.session === 0);
+assert.ok(first, 'no row in the picker opens session 0');
+const row0 = +first[0];
+assert.ok(
+  /[●○]/.test(strip(pick.lines[row0])),
+  'row ' + (row0 + 1) + ' claims session 0 but carries no session marker: ' + strip(pick.lines[row0])
+);
+assert.ok(
+  !/[●○]/.test(strip(pick.lines[row0 - 1] || '')),
+  'the row above session 0 is itself a session row — the map sits a line low'
 );
 
 // ---- every clickable row shows the thing it opens, and sits inside a block ----
