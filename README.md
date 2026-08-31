@@ -156,18 +156,31 @@ line, which is exactly when you want to know.
   Edit                    98      4k    1 хв      2
   WebSearch                2      1k    14 с      ·
 
-── ЦІНА ───────────────────────────────────
-  разом             18.7M  еквівалентних токенів входу
-  кеш перечитано    14.8M  ████████████████░░░░  79%
-  вихід і думання    2.8M  ███░░░░░░░░░░░░░░░░░  15%
-  запис у кеш        1.1M  █░░░░░░░░░░░░░░░░░░░  6%
-  один хід            50k  на початку 6k  ·  дорожче в 7.7 раза
-  намарно          10 викликів впало намарно
+── ЦІНА · з рахунку ───────────────────────
+  рахунок          $64.03  opus-5 $63.97  ·  haiku-4-5 $0.06
+  за рядок          $0.04  +1562 −185 рядків
+  за годину         $4.89  13 год сесії  ·  1 год 15 хв в API  ·  12 хв в інструментах
+  станом на        22:06  ·  далі рахунок оцінений
+  разом             15.3M  еквівалентних токенів входу
+  кеш перечитано    11.7M  ███████████████░░░░░  76%
+  вихід і думання    2.2M  ███░░░░░░░░░░░░░░░░░  14%
+  запис у кеш        1.4M  ██░░░░░░░░░░░░░░░░░░  9%
+  один хід            27k  на початку 6k  ·  дорожче в 4.1 раза
+  намарно          12 викликів впало намарно
+
+── ЦІНА ХОДУ 455 ──────────────────────────
+  ціна              ▁▅▄▃▁▃▃▅▇█▅      ▇   ▅
+         ▁▁ ▅▁▂▆▂▃▇█▄▆█▅██▆▇███████   ▄ ▆ █
+       ▂ ▁▅▇▂▃▆▄▃▅▇██▇▇████████████ █ █ █▂▃█
+       █▆▄▃▅▄█▅▆█████████████████████████████
+       29k на початку  →  33k наприкінці  ·  пік 59k
+  час  медіана 4:27 · p90 7:51 · найдовший 12:51 · 40% довші за 5 хв
 
 ── СКЛАД КОНТЕКСТУ ──────────────────────
   база          65k  ███░░░░░░░░░  системний промт, інструменти, пам'ять
   розмова      433k  ██████████░░  за 20 запитів
   з неї         51k  ██░░░░░░░░░░  відповіді інструментів, приблизно
+  гуки         2134  81% усіх вкладень  ·  238 дописали контекст
 
 ── ЗБОЇ ──────────────────────────────────
   виняток у скрипті   4  ████░░░░░░  SyntaxWarning: invalid escape sequence…
@@ -203,13 +216,31 @@ the same span underneath as two bands — what was generated, and where results 
 cut into as many slices as the pane is wide, so an hour of nothing looks like an hour of nothing. A
 bright patch in the lower band is a retry loop, sitting directly under the minutes that produced it.
 
-ЦІНА is the bill, in one unit. A prompt token read out of cache costs a tenth of a fresh one, a token
-written into the cache a quarter more, and output five times input — the ratios every Claude model is
-priced on — so adding them up in input-token equivalents shows the shape of what was spent. On a long
-session that shape surprises people: four fifths of it is the same prompt being re-read on every
-single turn, and none of it is the answers. That is what the ОДИН ХІД line is for — the context times
-the cache rate, which is what the next turn will cost before it does anything. Seven times what it
-cost at the start is not a session going wrong; it is a session that should have been two.
+ЦІНА opens in money whenever the session has written itself an invoice. Claude Code records one every
+so often — real dollars, split by model, with the lines it changed and three clocks: how long the
+session was open, how much of that the API was working, and how much was spent inside tools. The gap
+between the first clock and the second is where the hours went, and it is rarely the model. Because
+the invoice is written now and then rather than every turn, the block says the minute it was last
+true; after that the equivalents below carry on alone. A block header reading `з рахунку` means the
+money is measured, `оцінка` that this session has not written one yet.
+
+Below the money the same bill is counted in one unit. A prompt token read out of cache costs a tenth
+of a fresh one, a token written into the cache a quarter more, and output five times input — the
+ratios every Claude model is priced on — so adding them up in input-token equivalents shows the shape
+of what was spent. On a long session that shape surprises people: three quarters of it is the same
+prompt being re-read on every single turn, and none of it is the answers. That is what the ОДИН ХІД
+line is for — the context times the cache rate, which is what the next turn will cost before it does
+anything. Four times what it cost at the start is not a session going wrong; it is a session that
+should have been two.
+
+ЦІНА ХОДУ draws that climb instead of naming its endpoints. One column is a stretch of turns, as tall
+as what a turn in it was worth and coloured by how close that came to the session's own worst — green
+early, red where the window is full. It is cut by turn order rather than by the clock, because a
+session left open overnight would otherwise give every hour of silence a column and squeeze the work
+into one. A cliff in the middle is a compaction; a staircase with no cliff is the argument for
+starting again. Under it sits how long a turn actually takes, measured by Claude Code's own stopwatch
+rather than by the gaps between timestamps: the median, the ninetieth percentile, the worst one, and
+the share that ran over five minutes.
 
 ЗБОЇ sorts failures by what they are rather than by which tool reported them. Six failed Bash calls
 say nothing; four of them being the same missing path says where the session was going wrong, and an
@@ -221,13 +252,21 @@ measured rather than guessed: it is the prompt of the very first turn, before an
 said, so it is the system prompt, every tool definition and the memory files, together. Everything
 above it is the conversation, and the share of that which came back from tools is an estimate at
 four characters to the token — enough to tell a window full of talk from a window full of output
-nobody read.
+nobody read. The last row is the hook traffic, which is invisible in the window and loud in the
+transcript: on a machine with a plugin suite installed, four fifths of everything attached to the
+conversation is hook output, and a fraction of that writes into the context itself.
 
 НАЙДОРОЖЧІ ЗАПИТИ ranks rounds rather than tools: one thing asked and everything the model did
 about it, by what it wrote plus what it had to write into the cache. The columns are that cost, how
 many turns it took and how long it ran, and the line is what was asked — which is how a round is
 remembered, rather than by which tools it happened to use. The median and the mean under the table
 say whether one round was expensive or the whole session runs that way.
+
+One thing has to be said about how the counting works, because it is worth two thirds of every number
+on this screen. Claude Code writes an assistant message to the transcript more than once while the
+answer streams, and every copy carries the usage of the same request — in a real session two thirds
+of the turns arrive twice or three times. Adding them up inflates the whole screen accordingly, so a
+request is identified by its message id and only what grew since the last copy is counted.
 
 Reading all of it costs a pass over the whole transcript, which for a hundred-megabyte file is about
 six hundred milliseconds — taken eight megabytes at a time so the pane keeps painting, and only while

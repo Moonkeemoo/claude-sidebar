@@ -213,7 +213,7 @@ for (const i of rules.slice(1)) {
 // A result is a string on some calls and a list of blocks on others; a call is
 // timed by the gap to the result carrying its id; and the context is the newest
 // prompt, not the sum of every prompt ever sent.
-const stat = eval('(function(){' + src.match(/function newStats\(\)[\s\S]*?\nfunction statLine[\s\S]*?\n\}/)[0] + '\nreturn { newStats, statLine, askedIn } })()');
+const stat = eval('(function(){' + src.match(/const RATE = [\s\S]*?\nfunction statLine[\s\S]*?\n\}/)[0] + '\nreturn { newStats, statLine, askedIn, RATE } })()');
 
 // A round is one ask and everything the model did about it, so what counts as an
 // ask decides the whole table. A tool result is not one, a harness reminder is
@@ -257,6 +257,44 @@ assert.strictEqual(spent.open.size, 1, 'the call with no result yet is what "sti
 assert.strictEqual(spent.ctx, 325, 'context is the newest prompt: fresh, cached and written');
 assert.deepStrictEqual([spent.out, spent.think, spent.turns], [70, 40, 1], 'output, thinking and turns come off usage');
 assert.strictEqual(spent.model, 'opus-5', 'the model name is shown without its vendor prefix');
+
+// ---- and a streamed answer is billed once, however many copies it left ----
+// Claude Code writes an assistant message to the transcript several times while
+// it streams, and every copy carries the usage of the same request. Two thirds
+// of the turns in a real session arrive twice or three times, so summing them
+// inflates the whole screen by about two thirds. The id is the request; only
+// what grew since the last copy is new.
+const dup = stat.newStats();
+const copy = (out) => JSON.stringify({
+  type: 'assistant', timestamp: when(10),
+  message: { id: 'msg_01', usage: { input_tokens: 4, cache_read_input_tokens: 1000, cache_creation_input_tokens: 40, output_tokens: out }, content: [] },
+});
+stat.statLine(dup, copy(30));
+stat.statLine(dup, copy(30));
+stat.statLine(dup, copy(90));
+assert.strictEqual(dup.turns, 1, 'three copies of one answer are one turn');
+assert.strictEqual(dup.marks.length, 1, 'and one mark, or the session is drawn three times as long as it was');
+assert.deepStrictEqual([dup.read, dup.wrote, dup.out], [1000, 40, 90],
+  'the prompt is paid for once and the output grows to its final size: ' + JSON.stringify([dup.read, dup.wrote, dup.out]));
+assert.strictEqual(dup.marks[0].eq, 4 + 1000 * stat.RATE.read + 40 * stat.RATE.wrote + 90 * stat.RATE.out,
+  'a turn is worth the same whether it was written once or three times');
+
+// ---- the records Claude Code keeps about itself ----
+// The invoice, the stopwatch and the hook traffic are not in the messages: they
+// arrive as their own record types, and each one answers something no amount of
+// arithmetic over usage can.
+const kept = stat.newStats();
+for (const line of [
+  { type: 'cost-state', totalCostUSD: 64.03, totalLinesAdded: 1562, totalLinesRemoved: 185, totalDuration: 47119119, startTime: 1787983245358, modelUsage: { 'claude-opus-5': { costUSD: 63.97 } } },
+  { type: 'system', subtype: 'turn_duration', durationMs: 77386 },
+  { type: 'system', subtype: 'turn_duration', durationMs: 299948 },
+  { type: 'attachment', attachment: { type: 'hook_success' } },
+  { type: 'attachment', attachment: { type: 'hook_additional_context' } },
+  { type: 'attachment', attachment: { type: 'edited_text_file' } },
+]) stat.statLine(kept, JSON.stringify(line));
+assert.strictEqual(kept.bill.totalCostUSD, 64.03, 'the session carries a real bill and it must be kept');
+assert.deepStrictEqual(kept.durs, [77386, 299948], 'turn durations are measured by Claude Code, not derived from timestamps');
+assert.deepStrictEqual([kept.attach, kept.hooks, kept.hookCtx], [3, 2, 1], 'hooks are counted apart from everything else attached');
 
 // ---- failures are sorted by what they are, not by which tool reported them ----
 // Every pattern here was read out of a real transcript. The specific ones have
@@ -388,6 +426,31 @@ const three = bars({ cpu: [0.5], ram: [0.5], vram: [], net: [3, 9] }, 8, 3);
 assert.strictEqual(three.length, 6, 'every series with a history gets a band, and an absent one takes no rows');
 assert.deepStrictEqual(three.slice(4), [' 35:█', '35:▅35:█'],
   'traffic keeps its own colour and is scaled to the busiest moment on show');
+
+// ---- the price band fills the pane exactly, and leaves gaps where turns end ----
+// The spend screen is never rendered by the one-shot above — its parse is
+// asynchronous — so nothing else here would catch a band one column too wide.
+// Fewer turns than columns must leave the spare columns blank rather than draw a
+// floor under turns that do not exist.
+const pace = (marks, n, h) => eval('(function(){ const dim = (s) => s, sgr = (c, s) => s, clock = () => "";'
+  + ' const num = (v) => String(Math.round(v));'
+  + ' const cell = (s, w, right) => (right ? String(s).padStart(w) : String(s).padEnd(w));'
+  + ' const s = { marks: ' + JSON.stringify(marks) + ', durs: [] };'
+  + src.match(/const BARS = [\s\S]*?\nfunction barCell[\s\S]*?\n\}/)[0]
+  + src.match(/\nfunction paceRows[\s\S]*?\n\}/)[0]
+  + '\nreturn paceRows(s, ' + n + ', ' + h + ') })()');
+
+const climb = Array.from({ length: 40 }, (_, i) => ({ eq: 1000 + i * 500 }));
+for (const cols of [40, 60, 100]) {
+  const n = Math.max(12, cols - 8);
+  const band = pace(climb, n, 3);
+  for (const r of band.slice(0, 3)) {
+    assert.strictEqual(width(r.text), 7 + n, 'a price band row must be the width of the pane, was ' + width(r.text));
+  }
+}
+const sparse = pace([{ eq: 100 }, { eq: 400 }, { eq: 900 }], 12, 2);
+assert.strictEqual(strip(sparse[1].text).slice(7).replace(/[^ ]/g, '').length, 9,
+  'with three turns and twelve columns, nine columns must stay empty');
 
 // ---- and no control character got baked into the source ----
 // A shell heredoc collapses the escapes in the text it writes: `\b` becomes a

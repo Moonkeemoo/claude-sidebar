@@ -1154,6 +1154,13 @@ const STAT_TTL = 30 * 1000;
 const STAT_CHUNK = 8 * 1024 * 1024;
 
 
+// What a session actually costs, in one unit. A cached prompt token is a tenth
+// of a fresh one, writing into the cache is a quarter more than sending it, and
+// output is five times input — the ratios every Claude model is priced on. The
+// parser needs them as much as the price block does, because a turn is worth
+// something the moment it is read.
+const RATE = { read: 0.1, wrote: 1.25, input: 1, out: 5 };
+
 function newStats() {
   return {
     turns: 0, out: 0, think: 0, read: 0, wrote: 0, ctx: 0, model: '', bytes: 0, from: 0, to: 0,
@@ -1162,6 +1169,11 @@ function newStats() {
     // context grew and where it was cut back, and when the work actually
     // happened as against when the session was open.
     marks: [], rounds: [], base: 0, toolChars: 0, errs: new Map(), reads: new Map(),
+    // What has already been counted for a request, so a streamed copy of the
+    // same answer is not billed twice; the real invoice Claude Code writes for
+    // itself; how long each turn took by its own clock; and how much of the
+    // window arrived as hook output.
+    seen: new Map(), bill: null, durs: [], attach: 0, hooks: 0, hookCtx: 0,
   };
 }
 
@@ -1241,27 +1253,60 @@ function statLine(s, line) {
     const asked = askedIn(m);
     if (asked) s.rounds.push({ at: t, text: asked, out: 0, wrote: 0, turns: 0, ctx0: s.ctx, ctx: s.ctx });
   }
+  // The invoice Claude Code keeps for itself: real dollars, per model, with the
+  // lines it changed and the three clocks it runs. It is written now and then
+  // rather than every turn, so it is behind — the moment it describes is its own
+  // start plus the duration it reports.
+  if (d.type === 'cost-state' && d.totalCostUSD != null) s.bill = d;
+  if (d.type === 'system' && d.subtype === 'turn_duration' && d.durationMs) s.durs.push(d.durationMs);
+  if (d.type === 'attachment') {
+    s.attach++;
+    const kind = String((d.attachment || {}).type || '');
+    if (kind.startsWith('hook_')) s.hooks++;
+    if (kind === 'hook_additional_context') s.hookCtx++;
+  }
   const u = m.usage;
   if (u) {
-    s.turns++;
-    s.out += u.output_tokens || 0;
-    s.think += (u.output_tokens_details || {}).thinking_tokens || 0;
-    s.read += u.cache_read_input_tokens || 0;
-    s.wrote += u.cache_creation_input_tokens || 0;
+    // An assistant message is written to the transcript more than once while the
+    // answer streams, and every copy carries the usage of the same request.
+    // Adding them up bills two thirds of the session twice. The message id is
+    // the request, and only what is new since the last copy is counted.
+    const id = m.id || String(d.uuid || s.marks.length);
+    const now = {
+      out: u.output_tokens || 0,
+      think: (u.output_tokens_details || {}).thinking_tokens || 0,
+      read: u.cache_read_input_tokens || 0,
+      wrote: u.cache_creation_input_tokens || 0,
+    };
+    const was = s.seen.get(id);
+    const grew = (k) => (was ? Math.max(0, now[k] - was[k]) : now[k]);
+    const add = { out: grew('out'), think: grew('think'), read: grew('read'), wrote: grew('wrote') };
+    s.out += add.out;
+    s.think += add.think;
+    s.read += add.read;
+    s.wrote += add.wrote;
     // The newest turn's prompt is the context as it stands: what was sent fresh,
     // what came from cache, and what was written into it.
-    s.ctx = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+    s.ctx = (u.input_tokens || 0) + now.read + now.wrote;
     if (m.model) s.model = String(m.model).replace(/^claude-/, '');
-    s.marks.push({ t, ctx: s.ctx, out: u.output_tokens || 0, err: 0 });
     // The first prompt of a session is everything that is in the window before
     // anything is said: the system prompt, every tool definition, the memory
     // files. Nothing later can separate those out, and this measures them.
     if (!s.base) s.base = s.ctx;
+    let mark = was && was.mark;
+    if (!mark) { s.turns++; s.marks.push(mark = { t, ctx: s.ctx, out: 0, eq: 0, err: 0 }); }
+    mark.ctx = s.ctx;
+    mark.out += add.out;
+    // What this one turn is worth in the unit the price block uses, kept per
+    // turn so the climb can be drawn rather than summed.
+    mark.eq += add.read * RATE.read + add.wrote * RATE.wrote + add.out * RATE.out
+      + (was ? 0 : (u.input_tokens || 0) * RATE.input);
+    s.seen.set(id, Object.assign(now, { mark }));
     const r = s.rounds[s.rounds.length - 1];
     if (r) {
-      r.turns++;
-      r.out += u.output_tokens || 0;
-      r.wrote += u.cache_creation_input_tokens || 0;
+      if (!was) r.turns++;
+      r.out += add.out;
+      r.wrote += add.wrote;
       r.ctx = s.ctx;
       r.to = t;
     }
@@ -1962,6 +2007,22 @@ function span(ms) {
   return Math.floor(m / 60) + ' год ' + (m % 60) + ' хв';
 }
 
+// A duration read off a stopwatch rather than rounded to minutes: the difference
+// between a two-minute turn and a nine-minute one is the whole point of showing
+// it, and `span` rounds both to the same handful of words.
+function clock(ms) {
+  const t = Math.round(ms / 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  return t >= 3600 ? Math.floor(t / 3600) + ':' + p(Math.floor(t / 60) % 60) + ':' + p(t % 60)
+    : Math.floor(t / 60) + ':' + p(t % 60);
+}
+
+// Money as a person says it. Under ten dollars the cents decide something, over
+// a hundred they are noise.
+function usd(v) {
+  return '$' + (v < 100 ? v.toFixed(2) : Math.round(v));
+}
+
 // What the session has spent, and what it is still waiting on. The cache share
 // is the one number that says whether the prompt is being rebuilt from scratch:
 // tokens read out of cache cost a tenth of tokens written into it.
@@ -2063,14 +2124,9 @@ function errRows(s) {
   });
 }
 
-// What a session actually costs, in one unit. A cached prompt token is a tenth
-// of a fresh one, writing into the cache is a quarter more than sending it, and
-// output is five times input — the ratios every Claude model is priced on. Add
-// them up in input-token equivalents and the shape of the bill appears, which is
-// rarely the shape anyone expects: on a long session it is almost entirely the
-// prompt being re-read on every single turn.
-const RATE = { read: 0.1, wrote: 1.25, input: 1, out: 5 };
-
+// Add them up in input-token equivalents and the shape of the bill appears,
+// which is rarely the shape anyone expects: on a long session it is almost
+// entirely the prompt being re-read on every single turn.
 function priceOf(s) {
   const parts = [
     { label: 'кеш перечитано', v: s.read * RATE.read, colour: '36' },
@@ -2095,6 +2151,43 @@ function wasteOf(s) {
   return { files, reread, fails };
 }
 
+// The bill, when the session has written one. Everything here is measured by
+// Claude Code rather than derived from ratios, which makes it the only place in
+// the pane that speaks in money. It is behind by however long ago it was
+// written, so it says when it was true.
+function moneyRows(s) {
+  const b = s.bill;
+  const models = Object.entries(b.modelUsage || {})
+    .map(([name, u]) => [String(name).replace(/^claude-/, '').replace(/-\d{8}$/, ''), u.costUSD || 0])
+    .filter(([, v]) => v > 0.005)
+    .sort((a, b2) => b2[1] - a[1]);
+  const lines = (b.totalLinesAdded || 0) + (b.totalLinesRemoved || 0);
+  const hours = (b.totalDuration || 0) / 3600000;
+  const at = b.startTime && b.totalDuration ? b.startTime + b.totalDuration : 0;
+  const rows = [{
+    text: '  ' + dim(cell('рахунок', 17)) + sgr('1;33', cell(usd(b.totalCostUSD), 6, true))
+      + dim('  ' + (models.map(([n, v]) => n + ' ' + usd(v)).join('  ·  ') || '—')),
+  }];
+  if (lines) {
+    rows.push({
+      text: '  ' + dim(cell('за рядок', 17)) + cell(usd(b.totalCostUSD / lines), 6, true)
+        + dim('  +' + (b.totalLinesAdded || 0) + ' −' + (b.totalLinesRemoved || 0) + ' рядків'),
+    });
+  }
+  if (hours > 0.01) {
+    // Three clocks, and the gap between them is the answer to where the hours
+    // went: the session was open far longer than the model was ever working.
+    const clocks = [span(b.totalDuration) + ' сесії', span(b.totalAPIDuration || 0) + ' в API'];
+    if (W() >= 92) clocks.push(span(b.totalToolDuration || 0) + ' в інструментах');
+    rows.push({
+      text: '  ' + dim(cell('за годину', 17)) + cell(usd(b.totalCostUSD / hours), 6, true)
+        + dim('  ' + clocks.join('  ·  ')),
+    });
+  }
+  if (at) rows.push({ text: '  ' + dim(cell('станом на', 17)) + dim(hhmm(at) + '  ·  далі рахунок оцінений') });
+  return rows;
+}
+
 function priceRows(s) {
   const { parts, total } = priceOf(s);
   const w = Math.max(8, Math.min(20, W() - 54));
@@ -2102,6 +2195,7 @@ function priceRows(s) {
   const last = s.marks[s.marks.length - 1];
   const waste = wasteOf(s);
   const rows = [
+    ...(s.bill ? moneyRows(s) : []),
     { text: '  ' + dim(cell('разом', 17)) + sgr('1', cell(num(total), 6, true)) + dim('  еквівалентних токенів входу') },
     ...parts.map((p) => ({
       text: '  ' + dim(cell(p.label, 17)) + cell(num(p.v), 6, true) + '  '
@@ -2129,6 +2223,59 @@ function priceRows(s) {
   return rows;
 }
 
+// The price of one turn across the session, sliced by time the way the bands
+// above are. Early turns are cheap because the window is small; the same work at
+// the end of a long session costs several times more, and that climb is the
+// whole argument for starting a new session. Graded against this session's own
+// worst stretch, so the colour says how far up the climb a moment is.
+function paceRows(s, n, h) {
+  // Sliced by turn order rather than by the clock: a session left open overnight
+  // would give every hour of silence a column of its own and squeeze the work
+  // into one. The question is whether the hundredth turn costs more than the
+  // first, and that is asked in turns.
+  const marks = s.marks;
+  const avg = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    const from = Math.floor(i * marks.length / n);
+    const to = Math.floor((i + 1) * marks.length / n);
+    if (to <= from) continue;                 // more columns than turns to fill them
+    let sum = 0;
+    for (let j = from; j < to; j++) sum += marks[j].eq;
+    avg[i] = sum / (to - from);
+  }
+  const live = avg.filter((v) => v != null);
+  const peak = Math.max(...live, 1);
+  const rows = [];
+  for (let r = 0; r < h; r++) {
+    rows.push({
+      text: '  ' + dim(cell(r ? '' : 'ціна', 4)) + ' ' + avg.map((v) => {
+        if (v == null) return ' ';
+        const ch = barCell(v / peak, r, h);
+        return ch === ' ' ? ch : sgr(GRADE(v / peak), ch);
+      }).join(''),
+    });
+  }
+  if (live.length > 1) {
+    rows.push({
+      text: '  ' + dim(cell('', 5)) + dim(num(live[0]) + ' на початку  →  ' + num(live[live.length - 1])
+        + ' наприкінці  ·  пік ' + num(peak)),
+    });
+  }
+  // How long a turn takes by Claude Code's own stopwatch, which is the only
+  // measure here that is not derived from timestamps around it.
+  if (s.durs.length > 2) {
+    const d = [...s.durs].sort((a, b) => a - b);
+    const at = (q) => d[Math.min(d.length - 1, Math.floor(d.length * q))];
+    const over = d.filter((x) => x > 300000).length;
+    rows.push({
+      text: '  ' + dim(cell('час', 4)) + ' ' + dim('медіана ') + clock(at(0.5)) + dim('  ·  p90 ') + clock(at(0.9))
+        + dim('  ·  найдовший ') + clock(d[d.length - 1])
+        + dim('  ·  ' + Math.round(over / d.length * 100) + '% довші за 5 хв'),
+    });
+  }
+  return rows;
+}
+
 // What the window is made of, as far as a transcript can say. The base is
 // measured, not guessed: it is the prompt of the first turn, before anything had
 // been said. The rest is the conversation, and the share of it that came back
@@ -2149,6 +2296,13 @@ function makeupRows(s) {
     line('база', s.base, 'системний промт, інструменти, пам\'ять'),
     line('розмова', grown, 'за ' + plural(s.rounds.length, 'запит', 'запити', 'запитів')),
     line('з неї', fromTools, 'відповіді інструментів, приблизно'),
+    // Hooks are invisible in the window and loud in the transcript: on a machine
+    // with a plugin suite installed they are most of what gets attached.
+    ...(s.attach ? [{
+      text: '  ' + dim(cell('гуки', 11)) + cell(s.hooks, 6, true) + '  '
+        + dim(Math.round(s.hooks / s.attach * 100) + '% усіх вкладень'
+          + (s.hookCtx ? '  ·  ' + s.hookCtx + ' дописали контекст' : '')),
+    }] : []),
   ];
 }
 
@@ -2188,7 +2342,8 @@ function renderStats() {
         { key: 'КОНТЕКСТ', label: 'КОНТЕКСТ', items: ctxRows(s, h, n), count: '' },
         { key: 'ПЕРЕБІГ', label: 'ПЕРЕБІГ', items: bandRows(s, n), count: '' },
       ] : []),
-      ...(s.turns ? [{ key: 'ЦІНА', label: 'ЦІНА', items: priceRows(s), count: '' }] : []),
+      ...(s.turns ? [{ key: 'ЦІНА', label: 'ЦІНА', items: priceRows(s), count: s.bill ? 'з рахунку' : 'оцінка' }] : []),
+      ...(s.marks.length > 2 ? [{ key: 'ХОДИ', label: 'ЦІНА ХОДУ', items: paceRows(s, n, Math.max(2, h - 2)), count: String(s.turns) }] : []),
       ...(s.base ? [{ key: 'СКЛАД', label: 'СКЛАД КОНТЕКСТУ', items: makeupRows(s), count: '' }] : []),
       ...(s.errs.size ? [{ key: 'ЗБОЇ', label: 'ЗБОЇ', items: errRows(s), count: '' }] : []),
       ...(s.rounds.length ? [{ key: 'ЗАПИТИ', label: 'НАЙДОРОЖЧІ ЗАПИТИ', items: askRows(s), count: '' }] : []),
