@@ -2088,6 +2088,13 @@ function statRow(label, value, note, colour) {
 // and a pane that only makes sense to whoever wrote it is a pane read once.
 const subRow = (text) => ({ text: '  ' + dim(text) });
 
+// The explanation and the rows it introduces are two different things, and set
+// against each other with no gap they read as one block of grey. A blank line is
+// what separates them; the same in reverse for a line that sums up what is above
+// it. Both go through panel like every other row, so the maps stay in step.
+const intro = (text) => [subRow(text), { text: '' }];
+const outro = (...lines) => [{ text: '' }, ...lines.map(subRow)];
+
 // A count as a person reads it: thousands and millions, two significant figures
 // where it matters and none where it does not.
 // 21 запит, 24 запити, 25 запитів — the one place the pane counts things in
@@ -2140,7 +2147,7 @@ function toolRows(s) {
   const stuck = [...s.open.values()].filter((o) => o.at && Date.now() - o.at > 60000)
     .sort((a, b) => a.at - b.at);
   return [
-    subRow('хто повернув у вікно найбільше тексту — і хто досі не повернувся'),
+    ...intro('хто повернув у вікно найбільше тексту — і хто досі не повернувся'),
     ...stuck.slice(0, 3).map((o) => ({
       text: '  ' + sgr('1;33', cell('⏱ ' + o.name, GUT + VAL)) + '  ' + sgr('33', 'висить ' + span(Date.now() - o.at)),
     })),
@@ -2192,7 +2199,7 @@ function traceRows(s, h, n) {
   const eq = byTurn(s.marks, n, (m) => m.eq, 'avg');
   const err = byTurn(s.marks, n, (m) => m.err, 'sum');
   const eqPeak = Math.max(...eq.out.filter((v) => v != null), 1);
-  const rows = [subRow('як дорожчав хід від початку сесії й де падали інструменти')];
+  const rows = intro('як дорожчав хід від початку сесії й де падали інструменти');
   for (let r = 0; r < h; r++) {
     rows.push({
       text: '  ' + dim(cell(r ? '' : 'ціна', 4)) + ' ' + eq.out.map((v) => {
@@ -2208,9 +2215,10 @@ function traceRows(s, h, n) {
   const axis = timeAxis(7, n, (c) => eq.at[c]);
   if (axis) rows.push(axis);
   const live = eq.out.filter((v) => v != null);
+  const notes = [];
   if (live.length > 1) {
-    rows.push(subRow('ціна ходу: ' + num(live[0]) + ' на початку, ' + num(live[live.length - 1])
-      + ' наприкінці, найдорожчий ' + num(eqPeak)));
+    notes.push('ціна ходу: ' + num(live[0]) + ' на початку, ' + num(live[live.length - 1])
+      + ' наприкінці, найдорожчий ' + num(eqPeak));
   }
   // How long a turn takes by Claude Code's own stopwatch, which is the only
   // measure here that is not derived from the timestamps around it. Percentiles
@@ -2219,9 +2227,10 @@ function traceRows(s, h, n) {
     const d = [...s.durs].sort((a, b) => a - b);
     const q = (p) => d[Math.min(d.length - 1, Math.floor(d.length * p))];
     const over = d.filter((x) => x > 300000).length;
-    rows.push(subRow('половина ходів коротші за ' + clock(q(0.5)) + ', дев’ять з десяти за '
-      + clock(q(0.9)) + ', найдовший ' + clock(d[d.length - 1])));
+    notes.push('половина ходів коротші за ' + clock(q(0.5)) + ', дев’ять з десяти за '
+      + clock(q(0.9)) + ', найдовший ' + clock(d[d.length - 1]));
   }
+  if (notes.length) rows.push(...outro(...notes));
   return rows;
 }
 
@@ -2236,7 +2245,7 @@ function errRows(s) {
   const total = all.reduce((a, e) => a + e.n, 0) || 1;
   const room = Math.max(12, W() - NOTE - 14);
   return [
-    subRow('що ламалось — за суттю збою, а не за інструментом, який його доповів'),
+    ...intro('що ламалось — за суттю збою, а не за інструментом, який його доповів'),
     ...all.slice(0, 5).map((e) => {
       const on = Math.round(e.n / total * 10);
       return {
@@ -2314,7 +2323,7 @@ function priceRows(s) {
   const last = s.marks[s.marks.length - 1];
   const waste = wasteOf(s);
   const inTools = [...s.tools.values()].reduce((a, e) => a + e.ms, 0);
-  const rows = [subRow('скільки сесія вже коштувала і скільки коштуватиме наступний хід')];
+  const rows = intro('скільки сесія вже коштувала і скільки коштуватиме наступний хід');
   if (s.bill) rows.push(...moneyRows(s));
   // Without an invoice the only clock is the transcript's own span, split the
   // one way a transcript can split it: time inside a tool, and everything else —
@@ -2366,7 +2375,7 @@ function makeupRows(s, h, n) {
   };
   const line = (label, v, note) => statRow(label, num(v), bar(v) + dim('  ' + note));
   return [
-    subRow('що лежить у вікні моделі просто зараз і як воно туди набралось'),
+    ...intro('що лежить у вікні моделі просто зараз і як воно туди набралось'),
     statRow('у вікні', num(s.ctx), dim('стільки надсилається наново на кожному ході')),
     line('стартовий пакет', s.base, 'системний промт, інструменти, пам’ять'),
     line('наша розмова', grown, 'за ' + plural(s.rounds.length, 'запит', 'запити', 'запитів')),
@@ -2387,7 +2396,7 @@ function ctxChart(s, h, n) {
   if (s.marks.length < 3 || h < 3) return [];
   const ctx = byTurn(s.marks, n, (m) => m.ctx, 'max');
   const peak = Math.max(...ctx.out.filter((v) => v != null), 1);
-  const rows = gridRows(lineGrid([{ data: ctx.out.map((v) => (v || 0) / peak), colour: '36' }], h, n), num(peak));
+  const rows = [{ text: '' }, ...gridRows(lineGrid([{ data: ctx.out.map((v) => (v || 0) / peak), colour: '36' }], h, n), num(peak))];
   const axis = timeAxis(7, n, (c) => ctx.at[c]);
   if (axis) rows.push(axis);
   return rows;
@@ -2402,7 +2411,7 @@ function askRows(s) {
   const room = Math.max(12, W() - 34);
   const mid = rows.length ? [...rows].sort((a, b) => a.cost - b.cost)[rows.length >> 1] : null;
   return [
-    subRow('які прохання коштували найбільше — і скільки коштує звичайне'),
+    ...intro('які прохання коштували найбільше — і скільки коштує звичайне'),
     ...top.map((r) => ({
       // The columns line up with every other block: what it cost, then how much
       // work it took, then the ask itself where the explanations sit elsewhere.
@@ -2410,8 +2419,8 @@ function askRows(s) {
         + sgr('1', cell(num(r.cost), VAL, true))
         + dim(cell(r.to && r.at ? span(r.to - r.at) : '', 8, true)) + '  ' + clip(r.text, room),
     })),
-    ...(mid ? [subRow('половина запитів дешевші за ' + num(mid.cost)
-      + '  ·  у середньому ' + num(rows.reduce((a, r) => a + r.cost, 0) / Math.max(1, rows.length)))] : []),
+    ...(mid ? outro('половина запитів дешевші за ' + num(mid.cost)
+      + '  ·  у середньому ' + num(rows.reduce((a, r) => a + r.cost, 0) / Math.max(1, rows.length))) : []),
   ];
 }
 

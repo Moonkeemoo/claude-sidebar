@@ -449,7 +449,7 @@ assert.deepStrictEqual(three.slice(4), [' 35:█', '35:▅35:█'],
 // asynchronous — so nothing else here would catch a band one column too wide.
 // Fewer turns than columns must leave the spare columns blank rather than draw a
 // floor under turns that do not exist.
-const pace = (marks, n, h) => eval('(function(){ const dim = (s) => s, sgr = (c, s) => s, clock = () => "", subRow = (t) => ({ text: t });'
+const pace = (marks, n, h) => eval('(function(){ const dim = (s) => s, sgr = (c, s) => s, clock = () => "", subRow = (t) => ({ text: t }), intro = (t) => [{ text: t }, { text: "" }], outro = (...a) => [{ text: "" }, ...a.map((x) => ({ text: x }))];'
   + ' const num = (v) => String(Math.round(v)), hhmm = (t) => new Date(t).toISOString().slice(11, 16);'
   + ' const cell = (s, w, right) => (right ? String(s).padStart(w) : String(s).padEnd(w));'
   + ' const heatStrip = (v, n) => " ".repeat(n);'
@@ -465,15 +465,21 @@ const t0 = Date.parse('2026-08-29T09:00:00Z');
 const climb = Array.from({ length: 40 }, (_, i) => ({ eq: 1000 + i * 500, err: 0, t: t0 + i * 60000 }));
 for (const cols of [40, 60, 100]) {
   const n = Math.max(12, cols - 8);
-  // Row 0 is the block's one-line explanation of itself, not part of the chart.
+  // Found by content rather than by index: the block opens with an explanation
+  // and a blank line, and pinning the test to a row number breaks the moment
+  // another line is added above the chart.
   const band = pace(climb, n, 3);
-  for (const r of band.slice(1, 4)) {
+  const bars = band.filter((r) => /[▁-█]/.test(strip(r.text)));
+  const axis = band.filter((r) => /\d\d:\d\d/.test(strip(r.text)));
+  assert.strictEqual(bars.length, 3, 'the band must be as many rows as it was asked for');
+  for (const r of bars) {
     assert.strictEqual(width(r.text), 7 + n, 'a price band row must be the width of the pane, was ' + width(r.text));
   }
-  assert.strictEqual(width(band[4].text), 7 + n, 'and so must the time axis under it');
+  assert.strictEqual(width(axis[0].text), 7 + n, 'and so must the time axis under it');
 }
 const sparse = pace([{ eq: 100, err: 0, t: t0 }, { eq: 400, err: 0, t: t0 + 1000 }, { eq: 900, err: 0, t: t0 + 2000 }], 12, 2);
-assert.strictEqual(strip(sparse[2].text).slice(7).replace(/[^ ]/g, '').length, 9,
+const floor = sparse.filter((r) => /[▁-█]/.test(strip(r.text))).pop();
+assert.strictEqual(strip(floor.text).slice(7).replace(/[^ ]/g, '').length, 9,
   'with three turns and twelve columns, nine columns must stay empty');
 
 // A session that ran past midnight must not label its end with a smaller number
