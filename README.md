@@ -412,6 +412,18 @@ cd claude-sidebar
 node sidebar.js --install ~/Documents/GitHub    # the folder your projects live in
 ```
 
+The installer adds two entries to Warp's menu: **Claude + sidebar** and
+**Codex + sidebar**. They share the same viewer; it automatically reads Claude
+transcripts from `~/.claude/projects` and Codex transcripts from
+`~/.codex/sessions`. Codex usage windows and their reset times are shown from
+the exact `rate_limits` records written by Codex itself.
+
+For a Claude session the limits block shows the five-hour and seven-day windows,
+plus model-specific Opus or Sonnet windows when the account supplies them. It
+uses the same OAuth credentials as the locally installed Claude Code and asks
+Anthropic's usage endpoint at most once every five minutes; credentials are
+never printed or stored by the sidebar.
+
 Nothing to build, no dependencies, nothing installed into `~/.claude`. The pane runs from where it
 landed; the one thing `--install` writes is a terminal tab that opens Claude and this pane side by
 side — see [Starting Claude and the pane together](#starting-claude-and-the-pane-together), which is

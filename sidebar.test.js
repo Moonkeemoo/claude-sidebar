@@ -361,6 +361,14 @@ assert.ok(agent.agents.get('a1').done, 'the agent whose result came back is not 
 assert.strictEqual(agent.agents.get('a2').done, null, 'the one still out was closed by someone else result');
 assert.strictEqual(agent.agents.get('a2').what, 'explore', 'a dispatch with no description falls back to its type');
 
+const usageState = ing.newState();
+for (const output_tokens of [20, 35]) ing.ingest(usageState, JSON.stringify({
+  type: 'assistant', uuid: 'turn-1', timestamp: at,
+  message: { id: 'msg-1', usage: { input_tokens: 100, cache_read_input_tokens: 900, cache_creation_input_tokens: 50, output_tokens }, content: [] },
+}));
+assert.strictEqual(usageState.contextTokens, 1050, 'Claude context is the complete latest input window');
+assert.strictEqual(usageState.totalTokens, 1085, 'streaming copies must add only newly reported Claude tokens');
+
 // ---- a link is what it points at, not what it was written inside ----
 // A URL in a bold sentence carries the markers away with it, and the row looks
 // perfectly right while opening a page that does not exist. Same for a link at
@@ -499,6 +507,30 @@ const overnight = pace(
 ).filter((r) => /\d\d:\d\d/.test(strip(r.text)))[0];
 assert.ok(/\d+ \d\d:\d\d/.test(strip(overnight.text)),
   'an axis spanning more than a day must carry the day: ' + strip(overnight.text).trim());
+
+// ---- Codex transcripts use a different envelope, but feed the same pane ----
+const CODEX_FIXTURE = path.join(os.tmpdir(), 'rollout-2026-09-04T12-00-00-12345678-1234-1234-1234-123456789abc.jsonl');
+fs.writeFileSync(CODEX_FIXTURE, [
+  JSON.stringify({ timestamp: at, type: 'session_meta', payload: { id: '12345678-1234-1234-1234-123456789abc', cwd: __dirname } }),
+  JSON.stringify({ timestamp: at, type: 'event_msg', payload: { type: 'item_completed', item: { type: 'UserMessage', content: [{ type: 'text', text: 'Codex fixture title' }] } } }),
+  JSON.stringify({ timestamp: at, type: 'response_item', payload: { type: 'custom_tool_call', name: 'apply_patch', call_id: 'c1', input: '*** Update File: README.md' } }),
+  JSON.stringify({ timestamp: at, type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { total_tokens: 4321 }, last_token_usage: { input_tokens: 1234 }, model_context_window: 258400 }, rate_limits: { primary: { used_percent: 37, window_minutes: 300, resets_at: 1788534000 } } } }),
+].join('\n') + '\n');
+const codex = spawnSync(process.execPath, [SIDEBAR, CODEX_FIXTURE], {
+  env: { ...process.env, SIDEBAR_ONCE: '1', COLUMNS: '76', LINES: '30' }, encoding: 'utf8',
+});
+assert.strictEqual(codex.status, 0, 'Codex fixture exited ' + codex.status + ': ' + codex.stderr);
+const codexScreen = strip(codex.stdout);
+assert.ok(/ЛІМІТИ · CODEX/.test(codexScreen), 'Codex rate limits are not rendered');
+assert.ok(/37%/.test(codexScreen), 'Codex used percentage is missing');
+assert.ok(/токени\s+4k/.test(codexScreen), 'Codex token count is missing');
+assert.ok(/контекст\s+1k \/ 258k/.test(codexScreen), 'Codex current context is missing');
+assert.ok(/codex resume/.test(src), 'Codex sessions cannot be resumed');
+assert.ok(/'codex\.toml'/.test(src), 'the Warp installer does not write a Codex tab config');
+assert.ok(/"commands = \['codex'\]"/.test(src), 'the Codex Warp pane does not launch codex');
+assert.ok(/api\.anthropic\.com\/api\/oauth\/usage/.test(src), 'Claude account limits are not requested');
+assert.ok(/slow\('claude-usage', 5 \* 60 \* 1000/.test(src), 'Claude usage must stay off the render path and be cached');
+assert.ok(/seven_day_opus/.test(src) && /seven_day_sonnet/.test(src), 'Claude model-specific limits are not rendered');
 
 // ---- and no control character got baked into the source ----
 // A shell heredoc collapses the escapes in the text it writes: `\b` becomes a

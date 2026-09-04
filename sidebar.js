@@ -28,6 +28,8 @@ const HOME = os.homedir();
 const PROJECTS = path.join(HOME, '.claude', 'projects');
 const ACTIVE = path.join(HOME, '.claude', '.active-session.json');
 const IMAGES = path.join(HOME, '.claude', 'image-cache');
+const CODEX_SESSIONS = path.join(HOME, '.codex', 'sessions');
+const CLAUDE_CREDENTIALS = path.join(HOME, '.claude', '.credentials.json');
 const arg = process.argv[2];
 
 // ---- ANSI ----
@@ -75,7 +77,7 @@ function findTranscript() {
   const live = fromStatusline();
   if (live) return live.transcript_path;
   let best = null;
-  let dirs; try { dirs = fs.readdirSync(PROJECTS, { withFileTypes: true }); } catch { return null; }
+  let dirs; try { dirs = fs.readdirSync(PROJECTS, { withFileTypes: true }); } catch { dirs = []; }
   for (const d of dirs) {
     if (!d.isDirectory()) continue;
     let ents; try { ents = fs.readdirSync(path.join(PROJECTS, d.name)); } catch { continue; }
@@ -87,8 +89,26 @@ function findTranscript() {
       if (!best || st.mtimeMs > best.mtimeMs) best = { p, mtimeMs: st.mtimeMs };
     }
   }
+  for (const p of codexTranscripts()) {
+    const name = path.basename(p);
+    if (arg && !name.includes(arg)) continue;
+    let st; try { st = fs.statSync(p); } catch { continue; }
+    if (!best || st.mtimeMs > best.mtimeMs) best = { p, mtimeMs: st.mtimeMs };
+  }
   return best && best.p;
 }
+
+function codexTranscripts(dir = CODEX_SESSIONS, out = []) {
+  let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const e of ents) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) codexTranscripts(p, out);
+    else if (e.name.endsWith('.jsonl')) out.push(p);
+  }
+  return out;
+}
+
+const providerOf = (f) => f && path.resolve(f).startsWith(path.resolve(CODEX_SESSIONS) + path.sep) ? 'codex' : 'claude';
 
 function readSlice(file, from, len) {
   const fd = fs.openSync(file, 'r');
@@ -105,7 +125,12 @@ const NOISE = /^(\/dev\/null|&\d|-|\d)$/;
 // and the redirect regex below happily matches those too
 const BAD = /[{}()%*?<>|"]|:$/;
 
-function newState() { return { files: new Map(), links: new Map(), todos: [], agents: new Map(), cwd: null }; }
+function newState() {
+  return {
+    files: new Map(), links: new Map(), todos: [], agents: new Map(), cwd: null,
+    limits: null, provider: null, contextTokens: 0, totalTokens: 0, usageSeen: new Map(),
+  };
+}
 
 function noteFile(st, p, t) {
   if (!p || NOISE.test(p)) return;
@@ -131,17 +156,53 @@ function pathsFromBash(st, cmd, t) {
 function ingest(st, line) {
   let d; try { d = JSON.parse(line); } catch { return; }
   const t = d.timestamp || '';
+  if (d.type === 'session_meta') {
+    st.provider = 'codex';
+    if (d.payload && d.payload.cwd) st.cwd = d.payload.cwd;
+  }
+  if (d.type === 'turn_context' && d.payload && d.payload.cwd) st.cwd = d.payload.cwd;
+  if (d.type === 'event_msg' && d.payload && d.payload.type === 'token_count') st.limits = d.payload;
   if (d.cwd && !st.cwd) st.cwd = d.cwd;
   if (d.type === 'file-history-delta' && d.trackingPath) noteFile(st, d.trackingPath, t);
 
-  const content = (d.message || {}).content;
+  const usage = (d.message || {}).usage;
+  if (usage) {
+    const id = (d.message || {}).id || d.uuid || String(t);
+    const current = {
+      input: usage.input_tokens || 0,
+      read: usage.cache_read_input_tokens || 0,
+      write: usage.cache_creation_input_tokens || 0,
+      output: usage.output_tokens || 0,
+    };
+    const previous = st.usageSeen.get(id);
+    for (const key of Object.keys(current)) st.totalTokens += Math.max(0, current[key] - (previous ? previous[key] : 0));
+    st.contextTokens = current.input + current.read + current.write;
+    st.usageSeen.set(id, current);
+  }
+
+  let content = (d.message || {}).content;
+  if (d.type === 'response_item' && d.payload) {
+    const p = d.payload;
+    if (p.type === 'function_call' || p.type === 'custom_tool_call') {
+      let input = p.arguments || p.input || {};
+      if (typeof input === 'string') { try { input = JSON.parse(input); } catch { input = p.name === 'apply_patch' ? { patch: input } : { command: input }; } }
+      content = [{ type: 'tool_use', name: p.name, id: p.call_id || p.id, input }];
+    } else if (p.type === 'function_call_output' || p.type === 'custom_tool_call_output') {
+      content = [{ type: 'tool_result', tool_use_id: p.call_id, content: p.output }];
+    } else if (p.type === 'message') content = p.content;
+  }
   if (!Array.isArray(content)) return;
-  for (const b of content) {
+  for (let b of content) {
     if (!b || typeof b !== 'object') continue;
+    if (b.type === 'input_text' || b.type === 'output_text') b = { type: 'text', text: b.text };
     if (b.type === 'tool_use') {
       const inp = b.input || {};
       if (inp.file_path) noteFile(st, inp.file_path, t);
-      if (b.name === 'Bash' && inp.command) pathsFromBash(st, String(inp.command), t);
+      if (/^(Bash|exec|exec_command|shell_command)$/.test(b.name) && inp.command) pathsFromBash(st, String(inp.command), t);
+      if (b.name === 'apply_patch' && inp.patch) {
+        let m; const re = /^\*\*\* (?:Add|Update) File: (.+)$/gm;
+        while ((m = re.exec(String(inp.patch)))) noteFile(st, m[1], t);
+      }
       if (b.name === 'TodoWrite' && Array.isArray(inp.todos)) st.todos = inp.todos;
       // What the session handed off and whether it has come back. A dispatched
       // agent is the one piece of work a session queues that it cannot report
@@ -178,6 +239,7 @@ const TAIL = 3 * 1024 * 1024;   // newest slice only; see resetLive
 // ---- live session (incremental) ----
 const live = newState();
 let file = findTranscript();
+live.provider = providerOf(file);
 
 // One pane, one session. ACTIVE names whichever session took the last turn
 // anywhere on the machine, so every pane open at once shows the same one — in
@@ -218,7 +280,9 @@ function startOffset(f) {
 function resetLive(f) {
   file = f; offset = startOffset(f); carry = '';
   live.partial = offset > 0;
-  live.files.clear(); live.links.clear(); live.agents.clear(); live.todos = []; live.cwd = null;
+  live.files.clear(); live.links.clear(); live.agents.clear(); live.usageSeen.clear(); live.todos = []; live.cwd = null; live.limits = null;
+  live.contextTokens = 0; live.totalTokens = 0;
+  live.provider = providerOf(f);
 }
 
 // ---- session list ----
@@ -233,6 +297,12 @@ function titleOf(f, size) {
   for (const l of lines(readSlice(f, 0, Math.min(size, 131072)))) {
     try {
       const d = JSON.parse(l);
+      if (d.type === 'event_msg' && d.payload && d.payload.type === 'item_completed') {
+        const item = d.payload.item || {};
+        const text = item.type === 'UserMessage' && Array.isArray(item.content)
+          ? item.content.find((b) => b && b.type === 'text') : null;
+        if (text && text.text) return text.text.replace(/\s+/g, ' ').slice(0, 90);
+      }
       const c = d.type === 'user' && d.message && d.message.content;
       const s = typeof c === 'string' ? c : Array.isArray(c) ? (c.find((b) => b.type === 'text') || {}).text : null;
       if (s && !s.startsWith('<')) return s.replace(/\s+/g, ' ').slice(0, 90);
@@ -338,7 +408,7 @@ function activeSessions() {
 
 function listSessions() {
   const out = [];
-  let dirs; try { dirs = fs.readdirSync(PROJECTS, { withFileTypes: true }); } catch { return out; }
+  let dirs; try { dirs = fs.readdirSync(PROJECTS, { withFileTypes: true }); } catch { dirs = []; }
   for (const d of dirs) {
     if (!d.isDirectory()) continue;
     const dir = path.join(PROJECTS, d.name);
@@ -348,8 +418,15 @@ function listSessions() {
       const p = path.join(dir, name);
       let st; try { st = fs.statSync(p); } catch { continue; }
       if (st.size < 2048) continue;
-      out.push({ id: name.replace(/\.jsonl$/, ''), path: p, mtime: st.mtimeMs, size: st.size, title: titleFor(p, st.size, st.mtimeMs) });
+      out.push({ id: name.replace(/\.jsonl$/, ''), provider: 'claude', path: p, mtime: st.mtimeMs, size: st.size, title: titleFor(p, st.size, st.mtimeMs) });
     }
+  }
+  for (const p of codexTranscripts()) {
+    let st; try { st = fs.statSync(p); } catch { continue; }
+    if (st.size < 2048) continue;
+    const name = path.basename(p);
+    const match = name.match(/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/i);
+    out.push({ id: match ? match[1] : name.replace(/\.jsonl$/, ''), provider: 'codex', path: p, mtime: st.mtimeMs, size: st.size, title: titleFor(p, st.size, st.mtimeMs) });
   }
   return out.sort((a, b) => b.mtime - a.mtime);
 }
@@ -484,6 +561,18 @@ function slow(key, ttl, run) {
       .then(() => { at.busy = false; at.at = Date.now(); draw(); });
   }
   return at.value;
+}
+
+async function claudeUsage() {
+  const credentials = JSON.parse(fs.readFileSync(CLAUDE_CREDENTIALS, 'utf8'));
+  const token = credentials.claudeAiOauth && credentials.claudeAiOauth.accessToken;
+  if (!token) return null;
+  const response = await fetch('https://api.anthropic.com/api/oauth/usage', {
+    headers: { authorization: 'Bearer ' + token, 'anthropic-beta': 'oauth-2025-04-20', 'user-agent': 'claude-sidebar' },
+    signal: AbortSignal.timeout(8000),
+  });
+  if (!response.ok) return null;
+  return response.json();
 }
 
 // stderr is kept, not discarded: the one command here that can fail in a way a
@@ -1051,11 +1140,18 @@ function install(where, target) {
     `commands = ['node ${path.basename(__filename)}']`,
     '',
   ].join('\n');
+  const codexToml = toml
+    .replace("name = 'Claude + sidebar'", "name = 'Codex + sidebar'")
+    .replace("children = ['claude', 'sidebar']", "children = ['codex', 'sidebar']")
+    .replace("id = 'claude'", "id = 'codex'")
+    .replace("commands = ['claude']", "commands = ['codex']");
   fs.mkdirSync(TABDIR, { recursive: true });
   fs.writeFileSync(path.join(TABDIR, 'claude.toml'), toml, 'utf8');
+  fs.writeFileSync(path.join(TABDIR, 'codex.toml'), codexToml, 'utf8');
   console.log("Записано " + path.join(TABDIR, 'claude.toml'));
-  console.log("Claude стартуватиме в " + work);
-  console.log("Відкрий меню поруч із + у Warp — там зʼявився «Claude + sidebar».");
+  console.log("Записано " + path.join(TABDIR, 'codex.toml'));
+  console.log("Claude і Codex стартуватимуть у " + work);
+  console.log("Відкрий меню поруч із + у Warp — там зʼявилися «Claude + sidebar» і «Codex + sidebar».");
   if (!WARP) {
     console.log("Термінал не розпізнано, тому записано конфіг для Warp.");
     console.log("Для Ghostty: SIDEBAR_TERMINAL=ghostty node sidebar.js --install " + work);
@@ -1075,6 +1171,7 @@ function cwdOf(s) {
     for (let i = lines.length - 1; i >= 0; i--) {
       if (!lines[i].trim()) continue;
       let d; try { d = JSON.parse(lines[i]); } catch { continue; }  // incl. the half-cut first line
+      if ((d.type === 'turn_context' || d.type === 'session_meta') && d.payload && d.payload.cwd && fs.existsSync(d.payload.cwd)) return d.payload.cwd;
       if (d.cwd && fs.existsSync(d.cwd)) return d.cwd;
     }
   } catch { }
@@ -1083,10 +1180,12 @@ function cwdOf(s) {
 
 function openInTab(s) {
   const dir = cwdOf(s);
+  const provider = s.provider || providerOf(s.path);
+  const resume = provider === 'codex' ? 'codex resume ' + s.id : 'claude --resume ' + s.id;
   // Ghostty has no tab config to write and nothing to fire a URI at, so the
   // session opens as a split of the window you are already in.
   if (GHOSTTY) {
-    const cmd = 'cd ' + shq(dir) + ' && claude --resume ' + s.id;
+    const cmd = 'cd ' + shq(dir) + ' && ' + resume;
     if (!process.env.SIDEBAR_NO_LAUNCH) ghosttySplit(cmd, 'right');
     return cmd;
   }
@@ -1108,7 +1207,7 @@ function openInTab(s) {
     "id = 'claude'",
     "type = 'terminal'",
     `directory = '${dir}'`,
-    `commands = ['claude --resume ${s.id}']`,
+    `commands = ['${resume}']`,
     'is_focused = true',
     '',
     '[[panes]]',
@@ -2013,10 +2112,51 @@ function agentRows(st) {
     });
 }
 
+function limitRows(st) {
+  const data = st.limits;
+  if (!data) return [];
+  const rows = [];
+  if (data.claude) {
+    const names = { five_hour: '5 годин', seven_day: '7 днів', seven_day_opus: 'Opus · 7 днів', seven_day_sonnet: 'Sonnet · 7 днів', seven_day_oauth_apps: 'OAuth · 7 днів' };
+    for (const [key, label] of Object.entries(names)) {
+      const value = data.claude[key];
+      if (!value || value.utilization == null) continue;
+      const used = Math.round(value.utilization);
+      const reset = value.resets_at ? new Date(value.resets_at) : null;
+      const when = reset && !Number.isNaN(+reset) ? ' · reset ' + reset.toLocaleString('uk-UA', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+      rows.push({ text: '  ' + label.padEnd(17) + sgr(used >= 90 ? '31' : used >= 70 ? '33' : '32', String(used).padStart(3) + '%') + dim(when) });
+    }
+    if (st.contextTokens) rows.push({ text: '  ' + 'контекст'.padEnd(17) + sgr('1', num(st.contextTokens)) + dim(' токенів зараз') });
+    if (st.totalTokens) rows.push({ text: '  ' + 'токени'.padEnd(17) + sgr('1', num(st.totalTokens)) + dim(' за сесію') });
+    return rows;
+  }
+  const limits = data.rate_limits || {};
+  for (const [key, value] of [['основний', limits.primary], ['додатковий', limits.secondary]]) {
+    if (!value || value.used_percent == null) continue;
+    const reset = value.resets_at ? new Date(value.resets_at * 1000) : null;
+    const when = reset && !Number.isNaN(+reset) ? ' · reset ' + reset.toLocaleString('uk-UA', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+    const window = value.window_minutes ? ' · ' + (value.window_minutes >= 1440 ? Math.round(value.window_minutes / 1440) + ' дн' : value.window_minutes + ' хв') : '';
+    rows.push({ text: '  ' + key.padEnd(12) + sgr(value.used_percent >= 90 ? '31' : value.used_percent >= 70 ? '33' : '32', String(value.used_percent).padStart(3) + '%') + dim(window + when) });
+  }
+  const usage = (data.info || {}).total_token_usage;
+  const last = (data.info || {}).last_token_usage;
+  const maximum = (data.info || {}).model_context_window || 0;
+  if (last && maximum) rows.push({ text: '  контекст     ' + sgr('1', num(last.input_tokens || 0)) + dim(' / ' + num(maximum)) });
+  if (usage) rows.push({ text: '  токени       ' + sgr('1', num(usage.total_tokens || 0)) + dim(' за сесію') });
+  return rows;
+}
+
 function bodyBlocks(st, base) {
   const b = bodyItems(st, base);
   const out = [];
   const agents = agentRows(st);
+  const limits = limitRows(st);
+  if (limits.length) {
+    out.push({
+      key: 'ЛІМІТИ', label: 'ЛІМІТИ · ' + (st.provider === 'codex' ? 'CODEX' : 'CLAUDE'), items: limits,
+      note: 'квота з локального transcript; оновлюється після відповіді моделі',
+    });
+  }
   if (agents.length) {
     out.push({
       key: 'АГЕНТИ', label: 'АГЕНТИ', items: agents,
@@ -2062,6 +2202,10 @@ function renderWatch() {
     const txt = (td.status === 'in_progress' && td.activeForm) || td.content || '';
     return { text: '  ' + mark + ' ' + (td.status === 'completed' ? dim(txt) : txt) };
   });
+  if (live.provider === 'claude') {
+    const usage = slow('claude-usage', 5 * 60 * 1000, claudeUsage);
+    if (usage) live.limits = { claude: usage };
+  }
   const live_ = activeSessions().map((s) => ({ pick: s.path, text: activeRow(s, s.path === file) }));
 
   // Only ever a row when something is actually stranded, so an empty machine
