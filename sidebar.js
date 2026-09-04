@@ -192,6 +192,50 @@ function pathsFromBash(st, cmd, t) {
   while ((m = tee.exec(cmd))) noteFile(st, m[1], t);
 }
 
+// Codex writes the same facts under other names: usage once per response rather
+// than once per streamed copy of an answer, and messages and tool calls wrapped
+// in `response_item`. Both parsers below read Claude's shape, so the rename
+// happens once, here. Without it a Codex session has no price, no turns and no
+// tools, and the spend screen comes up empty with nothing to explain itself.
+function codexAsClaude(d) {
+  const p = d.payload;
+  if (!p) return d;
+  if (d.type === 'token_usage_record' && p.usage) {
+    const u = p.usage;
+    return {
+      timestamp: d.timestamp,
+      type: 'assistant',
+      message: {
+        id: p.response_id,
+        // Codex counts the cached part inside input_tokens; Claude counts it
+        // apart, and every rate downstream is written for Claude's split.
+        usage: {
+          input_tokens: Math.max(0, (u.input_tokens || 0) - (u.cached_input_tokens || 0)),
+          cache_read_input_tokens: u.cached_input_tokens || 0,
+          cache_creation_input_tokens: u.cache_write_input_tokens || 0,
+          output_tokens: u.output_tokens || 0,
+          output_tokens_details: { thinking_tokens: u.reasoning_output_tokens || 0 },
+        },
+      },
+    };
+  }
+  if (d.type !== 'response_item') return d;
+  if (p.type === 'function_call' || p.type === 'custom_tool_call') {
+    let input = p.arguments || p.input || {};
+    if (typeof input === 'string') { try { input = JSON.parse(input); } catch { input = p.name === 'apply_patch' ? { patch: input } : { command: input }; } }
+    return { timestamp: d.timestamp, type: 'assistant', message: { content: [{ type: 'tool_use', name: p.name, id: p.call_id || p.id, input }] } };
+  }
+  if (p.type === 'function_call_output' || p.type === 'custom_tool_call_output') {
+    return { timestamp: d.timestamp, type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: p.call_id, content: p.output }] } };
+  }
+  if (p.type === 'message') {
+    const content = (Array.isArray(p.content) ? p.content : []).map((b) => (
+      b && (b.type === 'input_text' || b.type === 'output_text') ? { type: 'text', text: b.text } : b));
+    return { timestamp: d.timestamp, type: p.role === 'user' ? 'user' : 'assistant', message: { role: p.role, content } };
+  }
+  return d;
+}
+
 function ingest(st, line) {
   let d; try { d = JSON.parse(line); } catch { return; }
   const t = d.timestamp || '';
@@ -203,6 +247,7 @@ function ingest(st, line) {
   if (d.type === 'event_msg' && d.payload && d.payload.type === 'token_count') st.limits = d.payload;
   if (d.cwd && !st.cwd) st.cwd = d.cwd;
   if (d.type === 'file-history-delta' && d.trackingPath) noteFile(st, d.trackingPath, t);
+  d = codexAsClaude(d);
 
   const usage = (d.message || {}).usage;
   if (usage) {
@@ -219,21 +264,10 @@ function ingest(st, line) {
     st.usageSeen.set(id, current);
   }
 
-  let content = (d.message || {}).content;
-  if (d.type === 'response_item' && d.payload) {
-    const p = d.payload;
-    if (p.type === 'function_call' || p.type === 'custom_tool_call') {
-      let input = p.arguments || p.input || {};
-      if (typeof input === 'string') { try { input = JSON.parse(input); } catch { input = p.name === 'apply_patch' ? { patch: input } : { command: input }; } }
-      content = [{ type: 'tool_use', name: p.name, id: p.call_id || p.id, input }];
-    } else if (p.type === 'function_call_output' || p.type === 'custom_tool_call_output') {
-      content = [{ type: 'tool_result', tool_use_id: p.call_id, content: p.output }];
-    } else if (p.type === 'message') content = p.content;
-  }
+  const content = (d.message || {}).content;
   if (!Array.isArray(content)) return;
-  for (let b of content) {
+  for (const b of content) {
     if (!b || typeof b !== 'object') continue;
-    if (b.type === 'input_text' || b.type === 'output_text') b = { type: 'text', text: b.text };
     if (b.type === 'tool_use') {
       const inp = b.input || {};
       if (inp.file_path) noteFile(st, inp.file_path, t);
@@ -1387,6 +1421,10 @@ function resultSize(c) {
 
 function statLine(s, line) {
   let d; try { d = JSON.parse(line); } catch { return; }
+  // Codex names the model once per turn and nowhere in the usage record, so it
+  // is read before the record is translated into Claude's shape.
+  if (d.type === 'turn_context' && d.payload && d.payload.model) s.model = String(d.payload.model);
+  d = codexAsClaude(d);
   const t = Date.parse(d.timestamp || '') || 0;
   if (t) { s.from = s.from ? Math.min(s.from, t) : t; s.to = Math.max(s.to, t); }
   const m = d.message || {};

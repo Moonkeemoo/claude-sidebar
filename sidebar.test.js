@@ -248,7 +248,10 @@ assert.strictEqual(
 // A result is a string on some calls and a list of blocks on others; a call is
 // timed by the gap to the result carrying its id; and the context is the newest
 // prompt, not the sum of every prompt ever sent.
-const stat = eval('(function(){' + src.match(/const RATE = [\s\S]*?\nfunction statLine[\s\S]*?\n\}/)[0] + '\nreturn { newStats, statLine, askedIn, RATE } })()');
+const stat = eval('(function(){'
+  + src.match(/\nfunction codexAsClaude[\s\S]*?\n\}\n/)[0]
+  + src.match(/const RATE = [\s\S]*?\nfunction statLine[\s\S]*?\n\}/)[0]
+  + '\nreturn { newStats, statLine, askedIn, RATE } })()');
 
 // A round is one ask and everything the model did about it, so what counts as an
 // ask decides the whole table. A tool result is not one, a harness reminder is
@@ -313,6 +316,29 @@ assert.deepStrictEqual([dup.read, dup.wrote, dup.out], [1000, 40, 90],
   'the prompt is paid for once and the output grows to its final size: ' + JSON.stringify([dup.read, dup.wrote, dup.out]));
 assert.strictEqual(dup.marks[0].eq, 4 + 1000 * stat.RATE.read + 40 * stat.RATE.wrote + 90 * stat.RATE.out,
   'a turn is worth the same whether it was written once or three times');
+
+// ---- a Codex session is the same session under other names ----
+// The picker lists Codex transcripts, so the spend screen is asked for them too,
+// and none of the shapes it reads are in one: usage arrives once per response
+// instead of once per streamed copy, and messages and calls come wrapped in
+// response_item. Untranslated the screen renders empty — no price, no turns, no
+// tools — which is indistinguishable from a screen that failed to load.
+const cdx = stat.newStats();
+for (const line of [
+  { type: 'turn_context', timestamp: when(0), payload: { model: 'gpt-5.6-sol' } },
+  { type: 'response_item', timestamp: when(1), payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'досліди проект' }] } },
+  { type: 'response_item', timestamp: when(2), payload: { type: 'custom_tool_call', name: 'shell', call_id: 'c1', input: 'ls' } },
+  { type: 'response_item', timestamp: when(12), payload: { type: 'custom_tool_call_output', call_id: 'c1', output: 'z'.repeat(600) } },
+  { type: 'token_usage_record', timestamp: when(13), payload: { response_id: 'resp_1', usage: { input_tokens: 16110, cached_input_tokens: 11392, cache_write_input_tokens: 0, output_tokens: 191, reasoning_output_tokens: 26 } } },
+  { type: 'token_usage_record', timestamp: when(20), payload: { response_id: 'resp_2', usage: { input_tokens: 16777, cached_input_tokens: 15872, cache_write_input_tokens: 0, output_tokens: 401, reasoning_output_tokens: 13 } } },
+]) stat.statLine(cdx, JSON.stringify(line));
+assert.strictEqual(cdx.turns, 2, 'each Codex response is a turn of its own — nothing is streamed twice');
+assert.strictEqual(cdx.read, 11392 + 15872, 'the cached part is what Claude calls a cache read');
+assert.strictEqual(cdx.ctx, 16777, 'Codex counts the cached part inside input_tokens; the context is the whole prompt');
+assert.strictEqual(cdx.model, 'gpt-5.6-sol', 'the model is named once per turn and never in the usage record');
+assert.strictEqual(cdx.rounds.length, 1, 'a Codex message with a role of user is an ask like any other');
+assert.strictEqual(cdx.tools.get('shell').bytes, 600, 'a Codex call and the output carrying its id are one tool row');
+assert.strictEqual(cdx.tools.get('shell').ms, 10000, 'and the gap between them is what that call took');
 
 // ---- the records Claude Code keeps about itself ----
 // The invoice, the stopwatch and the hook traffic are not in the messages: they
