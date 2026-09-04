@@ -106,7 +106,11 @@ assert.ok(
 // ---- and a click parses to the right button ----
 // MOUSE_RE and the modifier mask are read out of sidebar.js itself, so this
 // cannot drift away from the code it is checking.
-const src = fs.readFileSync(SIDEBAR, 'utf8');
+// Every check below that lifts a function out of sidebar.js finds it by matching
+// `\n}` at the end, and git hands a Windows checkout the same file with CRLF —
+// so the whole suite dies on a fresh clone, on a rebase, on anything that lets
+// git rewrite the working copy. The endings are normalised once, here.
+const src = fs.readFileSync(SIDEBAR, 'utf8').replace(/\r\n/g, '\n');
 const MOUSE_RE = eval(src.match(/const MOUSE_RE = (.+);/)[1]);
 const parse = (s) => {
   MOUSE_RE.lastIndex = 0;
