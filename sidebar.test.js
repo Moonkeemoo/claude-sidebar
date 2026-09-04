@@ -218,6 +218,32 @@ for (const i of rules.slice(1)) {
   assert.ok(watch.blocks[i - 1], 'the blank row on row ' + i + ' belongs to no block');
 }
 
+// ---- a pane pairs with the session that opened beside it ----
+// Every tab runs its own pane, and each has to find the one session it belongs
+// to with nothing but the transcripts on disk. The rule is birth: the tab starts
+// its agent and its pane together, so the transcript that appears around the
+// moment the pane did is ours and every other one was already running. Get this
+// wrong in the direction of "newest" and every pane in every tab lands on the
+// same session, which is the bug the pairing exists to prevent.
+const paired = eval('(function(){ const BORN = 1000000; let allTranscripts;'
+  + src.match(/\nconst PAIR_GRACE = [\s\S]*?\nfunction bornWith[\s\S]*?\n\}\n/)[0]
+  + '\nreturn { grace: PAIR_GRACE, of: (files) => { allTranscripts = () => files; return bornWith(); } } })()');
+const pair = paired.of;
+
+assert.strictEqual(pair([{ p: 'old.jsonl', bornMs: 1000000 - 5 * 60 * 1000 }]), null,
+  'a session already running when the pane started is not the pane\'s session, however busy it is');
+assert.strictEqual(pair([]), null, 'and with nothing on disk the pane stays unpinned rather than guessing');
+assert.strictEqual(
+  pair([{ p: 'old.jsonl', bornMs: 1 }, { p: 'ours.jsonl', bornMs: 1000000 + 20000 }, { p: 'later.jsonl', bornMs: 1000000 + 90000 }]),
+  'ours.jsonl',
+  'the first transcript to appear after the pane is the one in its tab; a tab opened afterwards is not'
+);
+assert.strictEqual(
+  pair([{ p: 'ours.jsonl', bornMs: 1000000 - paired.grace + 1000 }]),
+  'ours.jsonl',
+  'the tab brings the agent up first, so a transcript born just before the pane still counts'
+);
+
 // ---- what a session spent, counted off the shapes a transcript really uses ----
 // A result is a string on some calls and a list of blocks on others; a call is
 // timed by the gap to the result carrying its id; and the context is the newest

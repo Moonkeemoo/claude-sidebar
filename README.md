@@ -724,19 +724,21 @@ expected in 1.4, so of everything here this is the part most likely to want revi
 ## Which session a pane holds
 
 A pane holds one session. Which tab has the focus is not something a terminal will tell a program
-running inside it, so the pane infers it from when it started: it and its Claude open together, the
-tab config hands the focus to Claude, and the first turn taken after that is therefore this tab's.
-The pane pins to that session and stops looking. Two panes open at once end up on two different
-sessions, which is the whole point — before this they both read one machine-wide file and showed the
-same session in every tab.
+running inside it, so the pane infers it from when it started: the tab config opens Claude and the
+pane together, so the transcript that appears within seconds of the pane is the session in this tab,
+and every other one on the machine was already running when the pane arrived. The pane pins to that
+one and stops looking. Two panes open at once end up on two different sessions, which is the whole
+point — before this they both read one machine-wide file and showed the same session in every tab.
 
-Until that first turn the pane shows whatever moved last, so it has something to show rather than an
-empty frame. Type into another tab before your own and it pins there instead: press `Tab`, click the
-session you meant, and it re-pins to that one for good.
+Until that transcript appears the pane shows whatever moved last, so it has something to show rather
+than an empty frame. Resume an old session in the tab and no new transcript is written, so there is
+nothing for the pane to recognise: press `Tab`, click the session you meant, and it pins there for
+good. That click is also the way back from a pairing that went wrong.
 
-Knowing which session took a turn needs a hand from your status line. Claude Code runs the status
-line command only for the session taking the turn, so what it writes is authoritative rather than
-inferred. Add this to your `statusline.js`, wherever it has already parsed its stdin JSON as `j`:
+A status line can say it outright, and the pane still reads one where it finds it. Claude Code runs
+the status line command only for the session taking the turn, so what it writes is authoritative
+rather than inferred. Add this to your `statusline.js`, wherever it has already parsed its stdin
+JSON as `j`:
 
 ```js
 try {
@@ -754,10 +756,10 @@ try {
 } catch { /* the status line must render regardless */ }
 ```
 
-Without that file the pane never gets its pairing signal and falls back to the transcript with the
-newest modification time, re-checked once a second — a guess that goes wrong the moment a second
-session takes a turn in parallel. It ignores the file entirely when you pinned a session with an
-argument. Nothing breaks if you skip this; clicking the session you want in the list still pins it.
+Nothing here is required, and the pane no longer depends on it. What that file says is trusted for
+ten minutes and ignored after, because nothing deletes it when the status line is turned off, and a
+pane that trusts a stale one spends the day showing a session that stopped hours ago. The pane
+ignores it entirely when you pinned a session with an argument.
 
 ## Test
 

@@ -63,20 +63,28 @@ const MOUSE_RE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
 // statusline.js writes ACTIVE on every turn, and that hook fires only for the
 // session that just moved. An mtime scan is the fallback: it guesses, and
 // guesses wrong the moment a parallel session takes a turn.
+// Turning the statusline off stops the writes and leaves the last one on disk,
+// where it stays right-looking forever. A pane that trusts it then follows a
+// session that stopped hours ago: the transcript never grows, so nothing on the
+// screen ever moves and nothing says why. Past this the file counts as absent,
+// which is the fallback the pane is written to survive.
+const ACTIVE_TTL = 10 * 60 * 1000;
+
 function fromStatusline() {
   if (arg) return null;
   try {
     const a = JSON.parse(fs.readFileSync(ACTIVE, 'utf8'));
+    if (Date.now() - (a.ts || 0) > ACTIVE_TTL) return null;
     if (a.transcript_path && fs.existsSync(a.transcript_path)) return a;
   } catch { }
   return null;
 }
 
-function findTranscript() {
-  if (arg && arg.endsWith('.jsonl') && fs.existsSync(arg)) return arg;
-  const live = fromStatusline();
-  if (live) return live.transcript_path;
-  let best = null;
+// Every transcript the pane could be pinned to, Claude's and Codex's alike,
+// with the two facts anything below chooses on: when the session last moved,
+// and when it began.
+function allTranscripts() {
+  const out = [];
   let dirs; try { dirs = fs.readdirSync(PROJECTS, { withFileTypes: true }); } catch { dirs = []; }
   for (const d of dirs) {
     if (!d.isDirectory()) continue;
@@ -86,16 +94,47 @@ function findTranscript() {
       if (arg && !name.startsWith(arg)) continue;
       const p = path.join(PROJECTS, d.name, name);
       let st; try { st = fs.statSync(p); } catch { continue; }
-      if (!best || st.mtimeMs > best.mtimeMs) best = { p, mtimeMs: st.mtimeMs };
+      out.push({ p, mtimeMs: st.mtimeMs, bornMs: st.birthtimeMs || st.mtimeMs });
     }
   }
   for (const p of codexTranscripts()) {
-    const name = path.basename(p);
-    if (arg && !name.includes(arg)) continue;
+    if (arg && !path.basename(p).includes(arg)) continue;
     let st; try { st = fs.statSync(p); } catch { continue; }
-    if (!best || st.mtimeMs > best.mtimeMs) best = { p, mtimeMs: st.mtimeMs };
+    out.push({ p, mtimeMs: st.mtimeMs, bornMs: st.birthtimeMs || st.mtimeMs });
   }
+  return out;
+}
+
+function findTranscript() {
+  if (arg && arg.endsWith('.jsonl') && fs.existsSync(arg)) return arg;
+  const live = fromStatusline();
+  if (live) return live.transcript_path;
+  let best = null;
+  for (const f of allTranscripts()) if (!best || f.mtimeMs > best.mtimeMs) best = f;
   return best && best.p;
+}
+
+// The session that opened along with this pane, which is the session in this
+// tab. A tab starts its agent and its pane together, so the one transcript
+// created around the moment the pane did is ours; everything else on the machine
+// was already running when we arrived. That is the whole of the pairing, and it
+// needs nothing outside the transcripts themselves — the pane used to read the
+// statusline's ACTIVE file for this, and stopped being paired at all the day
+// that statusline was turned off.
+//
+// The tab brings the agent up first and the pane second, but a transcript is
+// written a moment after the process that owns it, so the two orders cross. The
+// window is what covers that, and it is short because a session started in
+// another tab half a minute earlier is not ours.
+const PAIR_GRACE = 30 * 1000;
+
+function bornWith() {
+  let first = null;
+  for (const f of allTranscripts()) {
+    if (f.bornMs < BORN - PAIR_GRACE) continue;
+    if (!first || f.bornMs < first.bornMs) first = f;
+  }
+  return first && first.p;
 }
 
 function codexTranscripts(dir = CODEX_SESSIONS, out = []) {
@@ -2829,6 +2868,7 @@ setInterval(() => {
   if (!pinned) {
     const a = fromStatusline();
     if (a && a.ts >= BORN) pinned = a.transcript_path;
+    else pinned = bornWith();
     const next = pinned || findTranscript();
     if (next && next !== file) resetLive(next);
   }

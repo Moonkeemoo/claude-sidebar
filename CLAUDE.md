@@ -104,8 +104,15 @@ the `.active-session.json` block inside the user's `statusline.js`, which lives 
 `claude-config` repo — README explains the contract. Without it the pane falls back to an mtime scan
 and still works, so never assume the file exists.
 
-That file is also where the pairing comes from. A pane pins to the first session whose turn lands
-after the pane started, which is the session in its own tab, and never looks again — anything that
-puts it back on a machine-wide "newest session" puts every pane in every tab on the same one, which
+The pairing no longer comes from that file. A pane pins to the first transcript created after the
+pane started — a tab opens its agent and its pane together, so that transcript is the session in its
+own tab — and never looks again. `bornWith` is the rule and `PAIR_GRACE` the window either side of
+it, short because a session started in another tab a minute earlier is not ours. Anything that puts
+the pane back on a machine-wide "newest session" puts every pane in every tab on the same one, which
 is the bug it was written to fix. `pinned` is the flag; `pinTo` is the only other way in, and the
 click on a session row is what fires it.
+
+`.active-session.json` is still read where it is fresh and ignored past `ACTIVE_TTL`. Nothing deletes
+it when the statusline is turned off, and a file that stays right-looking forever is worse than one
+that was never there: on 2026-09-04 every pane opened after the statusline came out spent the day on
+a session that had stopped at 17:02, with nothing on screen to say so.
