@@ -81,6 +81,29 @@ function fromStatusline() {
   return null;
 }
 
+// A `claude -p` run writes its transcript beside the interactive ones, and a
+// machine running a pipeline writes one every couple of minutes — topicloom put
+// nine of them in front of two real sessions on 2026-09-06. Nobody sits in one:
+// the pane cannot follow it, a click resumes a tab that answers nothing, and the
+// pairing is worse than the list. `bornWith` takes the first transcript born
+// after the pane, so a pipeline pass that started a second earlier becomes the
+// session the tab shows all day. The entrypoint separates them. It is written
+// near the head and never changes, so the answer is kept for the life of the
+// process — but only once the head actually carries it, because a transcript
+// read in its first moments has not reached that record yet.
+const HEAD = 256 * 1024;
+const sdkCache = new Map();
+function headless(p, size) {
+  const hit = sdkCache.get(p);
+  if (hit !== undefined) return hit;
+  let head = '';
+  try { head = readSlice(p, 0, Math.min(size, HEAD)); } catch { return false; }
+  if (!head.includes('"entrypoint":')) return false;
+  const sdk = head.includes('"entrypoint":"sdk-cli"');
+  sdkCache.set(p, sdk);
+  return sdk;
+}
+
 // Every transcript the pane could be pinned to, Claude's and Codex's alike,
 // with the two facts anything below chooses on: when the session last moved,
 // and when it began.
@@ -95,6 +118,7 @@ function allTranscripts() {
       if (arg && !name.startsWith(arg)) continue;
       const p = path.join(PROJECTS, d.name, name);
       let st; try { st = fs.statSync(p); } catch { continue; }
+      if (headless(p, st.size)) continue;
       out.push({ p, mtimeMs: st.mtimeMs, bornMs: st.birthtimeMs || st.mtimeMs });
     }
   }
@@ -496,6 +520,7 @@ function listSessions() {
       const p = path.join(dir, name);
       let st; try { st = fs.statSync(p); } catch { continue; }
       if (st.size < 2048) continue;
+      if (headless(p, st.size)) continue;
       out.push({ id: name.replace(/\.jsonl$/, ''), provider: 'claude', path: p, mtime: st.mtimeMs, size: st.size, title: titleFor(p, st.size, st.mtimeMs) });
     }
   }

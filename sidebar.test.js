@@ -248,6 +248,32 @@ assert.strictEqual(
   'the tab brings the agent up first, so a transcript born just before the pane still counts'
 );
 
+// ---- the transcripts nobody sits in ----
+// A pipeline calling `claude -p` leaves a transcript per pass. They outnumber
+// the real sessions on a busy afternoon, and the pairing takes whichever was
+// born first after the pane, so one of them becomes the session the tab shows.
+// The entrypoint is the difference; the second half is the one that bites, a
+// transcript read before its head record lands must stay a candidate rather
+// than being written off for the life of the process.
+const readSlice = (f, from, len) => fs.readFileSync(f, 'utf8').slice(from, from + len);
+const gate = eval('(function(){'
+  + src.match(/\nconst HEAD = [\s\S]*?\nfunction headless[\s\S]*?\n\}\n/)[0]
+  + '\nreturn headless })()');
+const jsonl = (name, entrypoint) => {
+  const f = path.join(os.tmpdir(), name);
+  fs.writeFileSync(f, JSON.stringify({ type: 'user', entrypoint, cwd: __dirname }) + '\n');
+  return f;
+};
+assert.strictEqual(gate(jsonl('sidebar-sdk.jsonl', 'sdk-cli'), 4096), true,
+  'a headless pass is not a session the pane can follow');
+assert.strictEqual(gate(jsonl('sidebar-cli.jsonl', 'cli'), 4096), false,
+  'a session someone is typing in stays in the list');
+const young = path.join(os.tmpdir(), 'sidebar-young.jsonl');
+fs.writeFileSync(young, JSON.stringify({ type: 'queue-operation', content: 'x' }) + '\n');
+assert.strictEqual(gate(young, 4096), false, 'a transcript with no entrypoint yet is kept, not judged');
+fs.appendFileSync(young, JSON.stringify({ type: 'user', entrypoint: 'sdk-cli' }) + '\n');
+assert.strictEqual(gate(young, 4096), true, 'and judged once the record it needs has been written');
+
 // ---- what a session spent, counted off the shapes a transcript really uses ----
 // A result is a string on some calls and a list of blocks on others; a call is
 // timed by the gap to the result carrying its id; and the context is the newest
