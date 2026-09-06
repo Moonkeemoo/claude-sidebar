@@ -11,7 +11,7 @@
 //                                    a split, printing whatever comes back
 //
 // Keys:  Tab or S  session list, Tab again closes it · ↑↓ move · Enter open the
-//        session beside you — a Warp tab, a Ghostty split · Esc back · Q quit
+//        session in this pane · O opens a Warp tab / Ghostty split · Esc back · Q quit
 // Mouse: the row under the pointer lights up when it opens something — click a
 //        session row to open that session, a link or a media row to open that.
 //        Wheel scrolls. Selecting text needs Shift, as in any mouse-aware TUI.
@@ -46,6 +46,7 @@ const K_LIST = new Set(['s', 'S', 'і', 'І', 'ы', 'Ы', '\t']);
 const K_QUIT = new Set(['q', 'Q', 'й', 'Й']);
 const K_VIEW = new Set(['v', 'V', 'м', 'М']);
 const K_STATS = new Set(['a', 'A', 'ф', 'Ф']);
+const K_OPEN = new Set(['o', 'O', 'щ', 'Щ']);
 const K_UP = new Set(['\u001b[A', 'k', 'л', 'Л']);
 const K_DOWN = new Set(['\u001b[B', 'j', 'о', 'О']);
 
@@ -244,7 +245,11 @@ function ingest(st, line) {
     if (d.payload && d.payload.cwd) st.cwd = d.payload.cwd;
   }
   if (d.type === 'turn_context' && d.payload && d.payload.cwd) st.cwd = d.payload.cwd;
-  if (d.type === 'event_msg' && d.payload && d.payload.type === 'token_count') st.limits = d.payload;
+  if (d.type === 'event_msg' && d.payload && d.payload.type === 'token_count') {
+    st.provider = 'codex';
+    const previous = st.limits || {};
+    st.limits = { ...d.payload, info: d.payload.info || previous.info, rate_limits: d.payload.rate_limits || previous.rate_limits };
+  }
   if (d.cwd && !st.cwd) st.cwd = d.cwd;
   if (d.type === 'file-history-delta' && d.trackingPath) noteFile(st, d.trackingPath, t);
   d = codexAsClaude(d);
@@ -510,6 +515,7 @@ function scanSession(s) {
   const hit = scanCache.get(s.path);
   if (hit && hit.mtime === s.mtime) return hit.st;
   const st = newState();
+  st.provider = s.provider || providerOf(s.path);
   const from = Math.max(0, s.size - TAIL);
   const text = readSlice(s.path, from, Math.min(s.size, TAIL));
   const lines = text.split('\n');
@@ -2191,7 +2197,7 @@ function agentRows(st) {
 
 function limitRows(st) {
   const data = st.limits;
-  if (!data) return [];
+  if (!data) return st.provider === 'codex' ? [{ text: '  Квота ще не записана — очікуємо відповідь Codex' }] : [];
   const rows = [];
   if (data.claude) {
     const names = { five_hour: '5 годин', seven_day: '7 днів', seven_day_opus: 'Opus · 7 днів', seven_day_sonnet: 'Sonnet · 7 днів', seven_day_oauth_apps: 'OAuth · 7 днів' };
@@ -2215,6 +2221,7 @@ function limitRows(st) {
     const window = value.window_minutes ? ' · ' + (value.window_minutes >= 1440 ? Math.round(value.window_minutes / 1440) + ' дн' : value.window_minutes + ' хв') : '';
     rows.push({ text: '  ' + key.padEnd(12) + sgr(value.used_percent >= 90 ? '31' : value.used_percent >= 70 ? '33' : '32', String(value.used_percent).padStart(3) + '%') + dim(window + when) });
   }
+  if (st.provider === 'codex' && !rows.length) rows.push({ text: '  Квота ще не записана — очікуємо відповідь Codex' });
   const usage = (data.info || {}).total_token_usage;
   const last = (data.info || {}).last_token_usage;
   const maximum = (data.info || {}).model_context_window || 0;
@@ -2292,6 +2299,7 @@ function renderWatch() {
   const strayRows = stray.map((o) => ({
     text: '  ' + sgr('33', o.name) + dim('  ×' + o.n + '  ' + weigh(o.bytes) + '  від ' + hhmm(o.born)),
   }));
+  const body = bodyBlocks(live, live.cwd);
 
   layout(out, [
     // The machine goes first: it is the one block that is worth a glance without
@@ -2300,9 +2308,10 @@ function renderWatch() {
       key: 'ЗАЛІЗО', label: 'ЗАЛІЗО', items: loadRows(), count: CHART_MODES[chartMode],
       note: 'навантаження машини посекундно, найновіше праворуч',
     },
+    ...body.filter((b) => b.key === 'ЛІМІТИ'),
     {
       key: ALIVE, label: 'СЕСІЇ', items: live_, empty: 'нічого не рухалось останні 3 год',
-      note: 'сесії Клода за останні 3 години — ◐ означає, що чекає на тебе',
+      note: 'сесії Claude і Codex за останні 3 години — клік перемикає панель',
     },
     ...(strayRows.length ? [{
       key: 'СИРОТИ', label: 'СИРОТИ', items: strayRows,
@@ -2322,7 +2331,7 @@ function renderWatch() {
       key: 'ПЛАН', label: 'ПЛАН', items: todos,
       note: 'що Клод збирається зробити далі, по черзі',
     }] : []),
-    ...bodyBlocks(live, live.cwd),
+    ...body.filter((b) => b.key !== 'ЛІМІТИ'),
   ], H() - 2);
 
   paint(out, dim(' Tab — список · a — витрати · v — вид графіка · клік відкриває · q — вихід'));
@@ -2742,7 +2751,7 @@ function renderPick() {
     {
       key: LIST, label: 'СЕСІЇ', items, want: Math.max(4, Math.floor(avail / 2)),
       count: sessions.length, focus: cursor,
-      note: 'усі сесії на машині — Enter відкриє вибрану новою вкладкою',
+      note: 'усі сесії на машині — Enter перемикає панель, O відкриває вкладку',
     },
     ...(proj ? [{ key: 'ПРОЄКТ', label: 'ПРОЄКТ', items: projectItems(proj) }] : []),
     ...(proj && proj.urls.length ? [{ key: 'ДЕПЛОЙ', label: 'ДЕПЛОЙ', items: deployItems(proj), count: '' }] : []),
@@ -2754,8 +2763,8 @@ function renderPick() {
   paint(out, openError
     ? sgr('33', clip(' ' + openError, W()))
     : dim(GHOSTTY || WARP
-      ? ' ↑↓ вибір · клік перемикає панель · Enter відкриває табом · Tab назад'
-      : ' ↑↓ вибір · клік перемикає панель · табів цей термінал не вміє · Tab назад'));
+      ? ' ↑↓ вибір · Enter/клік — панель · O — нова вкладка · Tab назад'
+      : ' ↑↓ вибір · Enter/клік — панель · Tab назад'));
 }
 
 let mode = 'watch';
@@ -2808,20 +2817,26 @@ function onMouse(btn, y, press) {
   if (!hit) return false;
   if (hit.chart) { chartMode = (chartMode + 1) % CHART_MODES.length; return true; }
   if (hit.open) { openExternal(hit.open); return false; }
-  if (hit.pick) { openPicker(hit.pick); return true; }
+  if (hit.pick) {
+    if (typeof hit.pick === 'string') pinTo({ path: hit.pick });
+    else openPicker();
+    return true;
+  }
   if (hit.session == null) return false;
   cursor = hit.session;
   pinTo(sessions[cursor]);
   return true;
 }
 
-// Clicking a session moves this pane onto it and leaves it there — Enter is what
+// Clicking a session moves this pane onto it and leaves it there — O is what
 // opens a session in a tab of its own. Without the pin the next turn taken
 // anywhere would pull the pane straight back off what was just chosen.
 function pinTo(s) {
   if (!s) return;
   pinned = s.path;
   if (s.path !== file) resetLive(s.path);
+  readNew();
+  for (const key of Object.keys(scroll)) delete scroll[key];
   mode = 'watch';
 }
 
@@ -2891,7 +2906,8 @@ if (process.stdin.isTTY) {
     }
     if (K_UP.has(k)) cursor = Math.max(0, cursor - 1);
     else if (K_DOWN.has(k)) cursor = Math.min(sessions.length - 1, cursor + 1);
-    else if (k === '\r' || k === '\n') { const s = sessions[cursor]; if (s) openInTab(s); }
+    else if (k === '\r' || k === '\n') pinTo(sessions[cursor]);
+    else if (K_OPEN.has(k)) { const s = sessions[cursor]; if (s) openInTab(s); }
     else if (K_LIST.has(k)) mode = 'watch';   // Tab closes what Tab opened
     else if (k === '\u001b' || K_QUIT.has(k)) mode = 'watch';
     else if (k === 'g') cursor = 0;

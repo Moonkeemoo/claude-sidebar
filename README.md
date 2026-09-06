@@ -387,7 +387,7 @@ all. Windows only.
 ── ФАЙЛИ 6 1–2 ──────────────────────────────────────
   21:45 claude-sidebar/README.md
   …
- ↑↓ вибір · клік перемикає панель · Enter відкриває табом · Tab назад
+ ↑↓ вибір · Enter/клік — панель · O — нова вкладка · Tab назад
 ```
 
 The pane's own labels are Ukrainian.
@@ -515,14 +515,15 @@ node sidebar.js 9de93e09
 | `A` | the spend screen — context, cache, and where the tokens and minutes went; again to leave |
 | `↑` `↓`, or `k` `j` | move the highlight; the blocks below follow it |
 | `g` / `G` | jump to the newest / oldest session |
-| `Enter` | open the highlighted session in a new terminal tab, resumed |
+| `Enter` | switch this pane to the highlighted session and keep it pinned |
+| `O` | open the highlighted session in a new terminal tab or split, resumed |
 | click on a row | move this pane onto that session and stay there |
 | `Esc` | leave the list, back to the live view |
 | `Q` | quit |
 | `Ctrl+C` | quit |
 
 `Tab` and the arrow keys work in any keyboard layout, and so do the letters — the pane accepts them in
-their Ukrainian and Russian positions too (`і`/`ы` for `S`, `й` for `Q`, `м` for `V`, `ф` for `A`, `л` and `о` for `k` and `j`).
+their Ukrainian and Russian positions too (`і`/`ы` for `S`, `й` for `Q`, `м` for `V`, `ф` for `A`, `щ` for `O`, `л` and `о` for `k` and `j`).
 You never have to switch layouts to drive it. `g` and `G` are the exception, Latin only.
 
 ### Mouse
@@ -535,11 +536,10 @@ click a file or a pasted image and it opens in whatever your system opens that w
 the live view and in the session list alike, so you can find an old conversation, see the screenshot
 you pasted into it, and open it without leaving the pane.
 
-In the live view, **a click anywhere in the СЕСІЇ block opens the session list**, on the session you
-clicked. That includes its header and the line saying nothing has moved, so the block is one target
-however empty it is. In the list itself, **a click on a session row moves this pane onto that
-session** and closes the list — the pane then holds it the way it held the one before, until you
-pick another. Opening a session in a tab of its own is `Enter`.
+In both views, **a click on a session row immediately switches this pane to that session**
+and keeps it pinned until you pick another. The header of the СЕСІЇ block and its empty-state
+line open the session list. In the list, `Enter` also switches this pane; `O` opens a resumed
+session in a new tab or split.
 
 **The wheel scrolls whatever the pointer is over, and only that.** Put it on ФАЙЛИ and the file list
 moves while the session list above stays where it was; move to ЛІНКИ and that one moves instead. Each
@@ -555,7 +555,7 @@ how every mouse-aware terminal program behaves, not a quirk of this one.
 
 ## Opening a session in its own tab
 
-`Enter` opens the session in its own working directory running `claude --resume <id>`. You are back
+`O` opens the session in its own working directory running `claude --resume <id>` or `codex resume <id>`. You are back
 in that conversation with its history intact. A click on the row does the other thing — it moves this
 pane onto that session without opening anything.
 
@@ -664,7 +664,7 @@ you.
 
 The pane works out which terminal it is in from `TERM_PROGRAM` and from the variables a terminal
 stamps on its own shells. If it ever guesses wrong the symptom is specific: the session list says
-`цей термінал сесій не відкриває` along the bottom, or `Enter` opens nothing. Settle it by hand —
+`цей термінал сесій не відкриває` along the bottom, or `O` opens nothing. Settle it by hand —
 `SIDEBAR_TERMINAL=ghostty` in the environment, or in front of any single command:
 
 ```bash

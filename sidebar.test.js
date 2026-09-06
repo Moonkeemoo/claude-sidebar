@@ -68,11 +68,11 @@ const first = Object.entries(pick.hits).find(([, h]) => h.session === 0);
 assert.ok(first, 'no row in the picker opens session 0');
 const row0 = +first[0];
 assert.ok(
-  /[●○]/.test(strip(pick.lines[row0])),
+  /[●○◐◑◉]/.test(strip(pick.lines[row0])),
   'row ' + (row0 + 1) + ' claims session 0 but carries no session marker: ' + strip(pick.lines[row0])
 );
 assert.ok(
-  !/[●○]/.test(strip(pick.lines[row0 - 1] || '')),
+  !/[●○◐◑◉]/.test(strip(pick.lines[row0 - 1] || '')),
   'the row above session 0 is itself a session row — the map sits a line low'
 );
 
@@ -404,6 +404,35 @@ assert.strictEqual(
 // answers, so matching it on anything else marks the wrong agent finished and
 // leaves one that is still running looking done.
 const ing = eval('(function(){' + src.match(/const TEMP = [\s\S]*?\nfunction ingest[\s\S]*?\n\}/)[0] + '\nreturn { newState, ingest } })()');
+const quotaState = ing.newState();
+const quota = { primary: { used_percent: 48, window_minutes: 10080 } };
+for (const payload of [
+  { rate_limits: quota, info: { model_context_window: 258400 } },
+  { rate_limits: null, info: { last_token_usage: { input_tokens: 2345 } } },
+  { rate_limits: { primary: { used_percent: 49 } }, info: null },
+]) ing.ingest(quotaState, JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', ...payload } }));
+assert.strictEqual(quotaState.provider, 'codex', 'a transcript tail without session_meta still identifies Codex');
+assert.strictEqual(quotaState.limits.rate_limits.primary.used_percent, 49, 'a newer quota replaces the previous snapshot');
+assert.strictEqual(quotaState.limits.info.last_token_usage.input_tokens, 2345, 'a quota-only event preserves token usage');
+ing.ingest(quotaState, JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', rate_limits: null } }));
+assert.strictEqual(quotaState.limits.rate_limits.primary.used_percent, 49, 'missing quota does not erase the last known limits');
+
+const selection = eval('(function(){ let file = "old", pinned = null, mode = "pick", reads = 0; const scroll = { ЛІМІТИ: 3 };'
+  + 'function resetLive(f) { file = f; } function readNew() { reads++; }'
+  + src.match(/\nfunction pinTo[\s\S]*?\n\}\n/)[0]
+  + '\nreturn { pinTo, state: () => ({ file, pinned, mode, reads, scroll }) }; })()');
+selection.pinTo({ path: 'codex.jsonl' });
+assert.deepStrictEqual(selection.state(), { file: 'codex.jsonl', pinned: 'codex.jsonl', mode: 'watch', reads: 1, scroll: {} },
+  'selection pins and reads the chosen session before drawing, with its limits visible from the first row');
+selection.pinTo(undefined);
+assert.strictEqual(selection.state().reads, 1, 'an empty picker selection is harmless');
+const mouseSelection = eval('(function(){ let cursor = 0, hover = -1; const sessions = [{ path: "picker.jsonl" }];'
+  + 'let hit, chosen, picked = false; function hitAt() { return hit; } function pinTo(s) { chosen = s.path; } function openPicker() { picked = true; }'
+  + src.match(/\nfunction onMouse[\s\S]*?\n\}\n/)[0]
+  + '\nreturn (next) => { hit = next; chosen = null; picked = false; onMouse(0, 2, true); return { chosen, picked }; }; })()');
+assert.deepStrictEqual(mouseSelection({ pick: 'live-codex.jsonl' }), { chosen: 'live-codex.jsonl', picked: false }, 'one click on a live session switches the pane');
+assert.deepStrictEqual(mouseSelection({ session: 0 }), { chosen: 'picker.jsonl', picked: false }, 'picker clicks use the same selection action');
+assert.deepStrictEqual(mouseSelection({ pick: true }), { chosen: null, picked: true }, 'the session header still opens the picker');
 const agent = ing.newState();
 for (const line of [
   { content: [{ type: 'tool_use', id: 'a1', name: 'Agent', input: { description: 'first' } }] },
@@ -581,6 +610,12 @@ assert.ok(/ЛІМІТИ · CODEX/.test(codexScreen), 'Codex rate limits are not 
 assert.ok(/37%/.test(codexScreen), 'Codex used percentage is missing');
 assert.ok(/токени\s+4k/.test(codexScreen), 'Codex token count is missing');
 assert.ok(/контекст\s+1k \/ 258k/.test(codexScreen), 'Codex current context is missing');
+const compactCodex = spawnSync(process.execPath, [SIDEBAR, CODEX_FIXTURE], {
+  env: { ...process.env, SIDEBAR_ONCE: '1', COLUMNS: '76', LINES: '24' }, encoding: 'utf8',
+});
+assert.strictEqual(compactCodex.status, 0, compactCodex.stderr);
+assert.ok(/37%/.test(strip(compactCodex.stdout)), 'Codex quota remains visible in a 24-row pane');
+assert.ok(!/\x1b\[\?(?:1049|1000|1003|1006)h/.test(compactCodex.stdout), 'one-shot rendering must not enable terminal modes');
 assert.ok(/codex resume/.test(src), 'Codex sessions cannot be resumed');
 assert.ok(/'codex\.toml'/.test(src), 'the Warp installer does not write a Codex tab config');
 assert.ok(/"commands = \['codex'\]"/.test(src), 'the Codex Warp pane does not launch codex');
