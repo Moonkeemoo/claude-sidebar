@@ -620,6 +620,74 @@ assert.ok(/\d+ \d\d:\d\d/.test(strip(overnight.text)),
   'an axis spanning more than a day must carry the day: ' + strip(overnight.text).trim());
 
 // ---- Codex transcripts use a different envelope, but feed the same pane ----
+const codexReader = eval('(function(){'
+  + 'const titleCache = new Map(), stateCache = new Map(), codexActivityCache = new Map();'
+  + ['readSlice', 'codexAsClaude', 'codexActivity', 'titleOf', 'titleFor', 'toolArg', 'agentOut', 'stateOf']
+    .map((name) => src.match(new RegExp('\\nfunction ' + name + '[\\s\\S]*?\\n\\}\\n'))[0]).join('\n')
+  + '\nreturn { codexActivity, titleFor, stateOf, codexAsClaude }; })()');
+const modernCodex = path.join(os.tmpdir(), 'sidebar-modern-codex-' + process.pid + '.jsonl');
+const modernLine = (type, payload, timestamp = at) => JSON.stringify({ type, payload, timestamp }) + '\n';
+try {
+  fs.writeFileSync(modernCodex,
+    modernLine('session_meta', { cwd: __dirname })
+    + modernLine('response_item', { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'internal instructions' }] })
+    + modernLine('response_item', { type: 'message', role: 'user', content: [{ type: 'input_text', text: '# AGENTS.md instructions\nconfiguration' }] })
+    + modernLine('response_item', { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Fix Codex session visibility' }] })
+    + modernLine('response_item', { type: 'function_call', name: 'exec_command', call_id: 'tool1', arguments: '{"command":"git status"}' })
+    + modernLine('token_usage_record', { response_id: 'r1', usage: { input_tokens: 20, output_tokens: 5 } }));
+  const stale = Date.parse(at) - 4 * 3600000;
+  const session = { path: modernCodex, mtime: stale, size: fs.statSync(modernCodex).size };
+  assert.strictEqual(codexReader.titleFor(modernCodex, session.size, stale), 'Fix Codex session visibility');
+  assert.strictEqual(codexReader.stateOf(session).tool, 'exec_command git status', 'usage must not hide the active Codex tool');
+  assert.strictEqual(codexReader.stateOf(session).waiting, false);
+  assert.strictEqual(codexReader.codexActivity(modernCodex, { size: session.size, mtimeMs: stale }), Date.parse(at), 'Codex activity comes from the transcript when Windows mtime is stale');
+  const next = new Date(Date.parse(at) + 1000).toISOString();
+  fs.appendFileSync(modernCodex, modernLine('event_msg', { type: 'task_complete' }, next));
+  session.size = fs.statSync(modernCodex).size;
+  assert.strictEqual(codexReader.stateOf(session).waiting, true, 'size changes invalidate cached state even with identical mtime');
+  assert.strictEqual(codexReader.codexActivity(modernCodex, { size: session.size, mtimeMs: stale }), Date.parse(next));
+  assert.strictEqual(codexReader.codexAsClaude({ type: 'response_item', payload: { type: 'message', role: 'developer' } }).type, 'response_item', 'developer instructions are not assistant replies');
+  const claudeRecord = { type: 'assistant', message: { content: [{ type: 'text', text: 'done' }] } };
+  assert.strictEqual(codexReader.codexAsClaude(claudeRecord), claudeRecord, 'Claude records pass through unchanged');
+  const patch = '*** Begin Patch\n*** Update File: sidebar.js\n@@\n-old\n+new\n*** End Patch';
+  const wrapped = codexReader.codexAsClaude({ type: 'response_item', payload: { type: 'custom_tool_call', name: 'exec', input: 'text(await tools.apply_patch(' + JSON.stringify(patch) + '));' } });
+  assert.strictEqual(wrapped.message.content[0].input.patch, patch, 'code-mode patch paths survive the exec wrapper without executing code');
+  const discovered = eval('(function(){ const PROJECTS = modernCodex; const codexTranscripts = () => [modernCodex];'
+    + 'const titleFor = codexReader.titleFor, codexActivity = codexReader.codexActivity;'
+    + src.match(/\nfunction listSessions[\s\S]*?\n\}\n/)[0]
+    + '\nreturn listSessions(); })()');
+  assert.ok(session.size < 2048, 'fixture represents a newly started small session');
+  assert.strictEqual(discovered.length, 1, 'a new Codex session is visible before it reaches 2 KB');
+  assert.strictEqual(discovered[0].provider, 'codex');
+} finally { fs.unlinkSync(modernCodex); }
+
+// ---- a second Codex account keeps its sessions in a home of its own ----
+// `$env:CODEX_HOME = "~\.codex-account2"; codex` is how a second login is kept
+// apart, and that variable lives only in the shell it was typed into — the pane
+// runs in another one. It has to find the session without it, and resume it
+// under that home rather than the default one.
+const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'sidebar-home-'));
+try {
+  const id2 = '01a09166-2915-76b1-8844-26ad8153219e';
+  const day = path.join(fakeHome, '.codex-account2', 'sessions', '2026', '09', '11');
+  fs.mkdirSync(day, { recursive: true });
+  const second = path.join(day, 'rollout-2026-09-11T19-56-26-' + id2 + '.jsonl');
+  fs.writeFileSync(second, modernLine('session_meta', { id: id2, cwd: __dirname })
+    + modernLine('event_msg', { type: 'user_message', message: 'Second account session' }));
+  const env = { ...process.env, HOME: fakeHome, USERPROFILE: fakeHome, SIDEBAR_ONCE: 'pick', COLUMNS: '76', LINES: '24' };
+  delete env.CODEX_HOME;
+  const picked = spawnSync(process.execPath, [SIDEBAR], { env, encoding: 'utf8' });
+  assert.strictEqual(picked.status, 0, picked.stderr);
+  assert.ok(/Second account session/.test(strip(picked.stdout)), 'a Codex session under ~/.codex-account2 is missing from the picker');
+  const codexResume = eval('(function(){ const HOME = fakeHome;'
+    + ['codexHomes', 'codexHomeOf', 'codexResume'].map((name) => src.match(new RegExp('\\nfunction ' + name + '[\\s\\S]*?\\n\\}\\n'))[0]).join('\n')
+    + '\nreturn codexResume; })()');
+  assert.ok(codexResume({ id: id2, path: second }).includes('CODEX_HOME="' + path.join(fakeHome, '.codex-account2') + '"'),
+    'a second-account session must resume under its own home, or codex resume finds nothing');
+  assert.strictEqual(codexResume({ id: id2, path: path.join(fakeHome, '.codex', 'sessions', 'x.jsonl') }), 'codex resume ' + id2,
+    'a session in the default home resumes exactly as before');
+} finally { fs.rmSync(fakeHome, { recursive: true, force: true }); }
+
 const CODEX_FIXTURE = path.join(os.tmpdir(), 'rollout-2026-09-04T12-00-00-12345678-1234-1234-1234-123456789abc.jsonl');
 fs.writeFileSync(CODEX_FIXTURE, [
   JSON.stringify({ timestamp: at, type: 'session_meta', payload: { id: '12345678-1234-1234-1234-123456789abc', cwd: __dirname } }),

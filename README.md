@@ -415,8 +415,10 @@ node sidebar.js --install ~/Documents/GitHub    # the folder your projects live 
 The installer adds two entries to Warp's menu: **Claude + sidebar** and
 **Codex + sidebar**. They share the same viewer; it automatically reads Claude
 transcripts from `~/.claude/projects` and Codex transcripts from
-`~/.codex/sessions`. Codex usage windows and their reset times are shown from
-the exact `rate_limits` records written by Codex itself.
+`~/.codex*/sessions` — every Codex home, so a second account started with
+`CODEX_HOME=~/.codex-account2` shows up without the pane knowing that variable,
+and resumes under its own home. Codex usage windows and their reset times are
+shown from the exact `rate_limits` records written by Codex itself.
 
 For a Claude session the limits block shows the five-hour and seven-day windows,
 plus model-specific Opus or Sonnet windows when the account supplies them. It

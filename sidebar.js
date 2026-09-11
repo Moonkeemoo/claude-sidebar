@@ -28,7 +28,6 @@ const HOME = os.homedir();
 const PROJECTS = path.join(HOME, '.claude', 'projects');
 const ACTIVE = path.join(HOME, '.claude', '.active-session.json');
 const IMAGES = path.join(HOME, '.claude', 'image-cache');
-const CODEX_SESSIONS = path.join(HOME, '.codex', 'sessions');
 const CLAUDE_CREDENTIALS = path.join(HOME, '.claude', '.credentials.json');
 const arg = process.argv[2];
 
@@ -125,7 +124,7 @@ function allTranscripts() {
   for (const p of codexTranscripts()) {
     if (arg && !path.basename(p).includes(arg)) continue;
     let st; try { st = fs.statSync(p); } catch { continue; }
-    out.push({ p, mtimeMs: st.mtimeMs, bornMs: st.birthtimeMs || st.mtimeMs });
+    out.push({ p, mtimeMs: codexActivity(p, st), bornMs: st.birthtimeMs || st.mtimeMs });
   }
   return out;
 }
@@ -162,17 +161,53 @@ function bornWith() {
   return first && first.p;
 }
 
-function codexTranscripts(dir = CODEX_SESSIONS, out = []) {
-  let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
-  for (const e of ents) {
-    const p = path.join(dir, e.name);
-    if (e.isDirectory()) codexTranscripts(p, out);
-    else if (e.name.endsWith('.jsonl')) out.push(p);
+// Codex keeps each login in a home of its own: a second account runs as
+// `$env:CODEX_HOME = "~\.codex-account2"; codex`. That variable lives in the
+// shell the account was started from and never reaches this pane, so every
+// ~/.codex* home is read, plus whatever CODEX_HOME this process does carry.
+function codexHomes() {
+  let names; try { names = fs.readdirSync(HOME).filter((n) => n.startsWith('.codex')); } catch { names = []; }
+  return [...new Set([process.env.CODEX_HOME, ...names.map((n) => path.join(HOME, n))].filter(Boolean).map((h) => path.resolve(h)))];
+}
+
+function codexHomeOf(f) {
+  const p = f && path.resolve(f);
+  return p && codexHomes().find((h) => p.startsWith(path.join(h, 'sessions') + path.sep));
+}
+
+function codexTranscripts(dirs = codexHomes().map((h) => path.join(h, 'sessions')), out = []) {
+  for (const dir of dirs) {
+    let ents; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of ents) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) codexTranscripts([p], out);
+      else if (e.name.endsWith('.jsonl')) out.push(p);
+    }
   }
   return out;
 }
 
-const providerOf = (f) => f && path.resolve(f).startsWith(path.resolve(CODEX_SESSIONS) + path.sep) ? 'codex' : 'claude';
+const providerOf = (f) => codexHomeOf(f) ? 'codex' : 'claude';
+
+// Windows can leave mtime unchanged while Codex holds its transcript open.
+// Read only a bounded tail, and invalidate on size as well as mtime.
+const codexActivityCache = new Map();
+function codexActivity(p, st) {
+  const hit = codexActivityCache.get(p);
+  if (hit && hit.size === st.size && hit.mtime === st.mtimeMs) return hit.at;
+  let at = st.mtimeMs;
+  try {
+    const lines = readSlice(p, Math.max(0, st.size - 65536), Math.min(st.size, 65536)).split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      try {
+        const t = Date.parse(JSON.parse(lines[i]).timestamp);
+        if (Number.isFinite(t)) { at = Math.max(at, t); break; }
+      } catch { }
+    }
+  } catch { }
+  codexActivityCache.set(p, { size: st.size, mtime: st.mtimeMs, at });
+  return at;
+}
 
 function readSlice(file, from, len) {
   const fd = fs.openSync(file, 'r');
@@ -248,15 +283,27 @@ function codexAsClaude(d) {
   if (p.type === 'function_call' || p.type === 'custom_tool_call') {
     let input = p.arguments || p.input || {};
     if (typeof input === 'string') { try { input = JSON.parse(input); } catch { input = p.name === 'apply_patch' ? { patch: input } : { command: input }; } }
+    // Code-mode records the orchestration source, not separate nested calls.
+    // Decode literal patch arguments only; never execute transcript JavaScript.
+    if (p.name === 'exec' && typeof input.command === 'string') {
+      const patches = [];
+      const re = /\btools\.apply_patch\(\s*("(?:\\.|[^"\\])*")\s*\)/g;
+      let match;
+      while ((match = re.exec(input.command))) {
+        try { patches.push(JSON.parse(match[1])); } catch { }
+      }
+      if (patches.length) input.patch = patches.join('\n');
+    }
     return { timestamp: d.timestamp, type: 'assistant', message: { content: [{ type: 'tool_use', name: p.name, id: p.call_id || p.id, input }] } };
   }
   if (p.type === 'function_call_output' || p.type === 'custom_tool_call_output') {
     return { timestamp: d.timestamp, type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: p.call_id, content: p.output }] } };
   }
   if (p.type === 'message') {
+    if (p.role !== 'user' && p.role !== 'assistant') return d;
     const content = (Array.isArray(p.content) ? p.content : []).map((b) => (
       b && (b.type === 'input_text' || b.type === 'output_text') ? { type: 'text', text: b.text } : b));
-    return { timestamp: d.timestamp, type: p.role === 'user' ? 'user' : 'assistant', message: { role: p.role, content } };
+    return { timestamp: d.timestamp, type: p.role, phase: p.phase, message: { role: p.role, content } };
   }
   return d;
 }
@@ -301,7 +348,7 @@ function ingest(st, line) {
       const inp = b.input || {};
       if (inp.file_path) noteFile(st, inp.file_path, t);
       if (/^(Bash|exec|exec_command|shell_command)$/.test(b.name) && inp.command) pathsFromBash(st, String(inp.command), t);
-      if (b.name === 'apply_patch' && inp.patch) {
+      if ((b.name === 'apply_patch' || b.name === 'exec') && inp.patch) {
         let m; const re = /^\*\*\* (?:Add|Update) File: (.+)$/gm;
         while ((m = re.exec(String(inp.patch)))) noteFile(st, m[1], t);
       }
@@ -396,18 +443,20 @@ function titleOf(f, size) {
   for (const l of lines(readSlice(f, Math.max(0, size - 262144), Math.min(size, 262144))).reverse()) {
     try { const d = JSON.parse(l); if (d.type === 'ai-title' && d.aiTitle) return d.aiTitle.replace(/\s+/g, ' ').trim(); } catch { }
   }
-  for (const l of lines(readSlice(f, 0, Math.min(size, 131072)))) {
+  for (const l of lines(readSlice(f, 0, Math.min(size, 512 * 1024)))) {
     try {
-      const d = JSON.parse(l);
+      let d = JSON.parse(l);
+      if (d.type === 'event_msg' && d.payload && d.payload.type === 'user_message' && d.payload.message) return d.payload.message.replace(/\s+/g, ' ').slice(0, 90);
       if (d.type === 'event_msg' && d.payload && d.payload.type === 'item_completed') {
         const item = d.payload.item || {};
         const text = item.type === 'UserMessage' && Array.isArray(item.content)
           ? item.content.find((b) => b && b.type === 'text') : null;
         if (text && text.text) return text.text.replace(/\s+/g, ' ').slice(0, 90);
       }
+      d = codexAsClaude(d);
       const c = d.type === 'user' && d.message && d.message.content;
       const s = typeof c === 'string' ? c : Array.isArray(c) ? (c.find((b) => b.type === 'text') || {}).text : null;
-      if (s && !s.startsWith('<')) return s.replace(/\s+/g, ' ').slice(0, 90);
+      if (s && !s.startsWith('<') && !s.startsWith('# AGENTS.md instructions')) return s.replace(/\s+/g, ' ').slice(0, 90);
     } catch { }
   }
   return null;
@@ -415,10 +464,10 @@ function titleOf(f, size) {
 
 function titleFor(p, size, mtimeMs) {
   const hit = titleCache.get(p);
-  if (hit && hit.mtimeMs === mtimeMs) return hit.title;
+  if (hit && hit.mtimeMs === mtimeMs && hit.size === size) return hit.title;
   let title = null;
   try { title = titleOf(p, size); } catch { }
-  titleCache.set(p, { mtimeMs, title });
+  titleCache.set(p, { mtimeMs, size, title });
   return title;
 }
 
@@ -461,7 +510,7 @@ function agentOut(lines) {
 const stateCache = new Map();
 function stateOf(s) {
   const hit = stateCache.get(s.path);
-  if (hit && hit.mtime === s.mtime) return hit.st;
+  if (hit && hit.mtime === s.mtime && hit.size === s.size) return hit.st;
   const st = { waiting: false, tool: null, agent: null };
   try {
     const from = Math.max(0, s.size - 65536);
@@ -470,16 +519,22 @@ function stateOf(s) {
     for (let i = lines.length - 1; i >= 0; i--) {
       if (!lines[i].trim()) continue;
       let d; try { d = JSON.parse(lines[i]); } catch { continue; }
+      if (d.type === 'token_usage_record') continue;
+      if (d.type === 'event_msg' && d.payload && /^(task_complete|task_started|turn_aborted)$/.test(d.payload.type)) {
+        st.waiting = d.payload.type !== 'task_started';
+        break;
+      }
+      d = codexAsClaude(d);
       if (d.type !== 'assistant') continue;
       const c = (d.message || {}).content;
       const call = Array.isArray(c) && c.find((b) => b && b.type === 'tool_use');
       st.tool = call ? call.name + toolArg(call) : null;
-      st.waiting = !call;
+      st.waiting = !call && d.phase !== 'commentary';
       break;
     }
     st.agent = agentOut(lines);
   } catch { }
-  stateCache.set(s.path, { mtime: s.mtime, st });
+  stateCache.set(s.path, { mtime: s.mtime, size: s.size, st });
   return st;
 }
 
@@ -526,10 +581,10 @@ function listSessions() {
   }
   for (const p of codexTranscripts()) {
     let st; try { st = fs.statSync(p); } catch { continue; }
-    if (st.size < 2048) continue;
+    if (!st.size) continue;
     const name = path.basename(p);
     const match = name.match(/([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$/i);
-    out.push({ id: match ? match[1] : name.replace(/\.jsonl$/, ''), provider: 'codex', path: p, mtime: st.mtimeMs, size: st.size, title: titleFor(p, st.size, st.mtimeMs) });
+    out.push({ id: match ? match[1] : name.replace(/\.jsonl$/, ''), provider: 'codex', path: p, mtime: codexActivity(p, st), size: st.size, title: titleFor(p, st.size, st.mtimeMs) });
   }
   return out.sort((a, b) => b.mtime - a.mtime);
 }
@@ -538,7 +593,7 @@ function listSessions() {
 // a long session shows recent work rather than everything it ever touched.
 function scanSession(s) {
   const hit = scanCache.get(s.path);
-  if (hit && hit.mtime === s.mtime) return hit.st;
+  if (hit && hit.mtime === s.mtime && hit.size === s.size) return hit.st;
   const st = newState();
   st.provider = s.provider || providerOf(s.path);
   const from = Math.max(0, s.size - TAIL);
@@ -548,7 +603,7 @@ function scanSession(s) {
   for (const l of lines) if (l.trim()) ingest(st, l);
   st.partial = from > 0;
   st.media = mediaOf(s.id);
-  scanCache.set(s.path, { mtime: s.mtime, st });
+  scanCache.set(s.path, { mtime: s.mtime, size: s.size, st });
   return st;
 }
 
@@ -1282,10 +1337,22 @@ function cwdOf(s) {
   return process.cwd();
 }
 
+// A session from another account resumes only under that account's home:
+// otherwise `codex resume` looks for the id in ~/.codex and finds nothing. The
+// login of such a home sits in its own auth.json, which is where
+// cli_auth_credentials_store=file points Codex. Double quotes, because the
+// command lands inside a TOML literal string.
+function codexResume(s) {
+  const home = codexHomeOf(s.path);
+  if (!home || home === path.resolve(HOME, '.codex')) return 'codex resume ' + s.id;
+  const run = 'codex resume -c cli_auth_credentials_store=file ' + s.id;
+  return process.platform === 'win32' ? `$env:CODEX_HOME="${home}"; ${run}` : `CODEX_HOME="${home}" ${run}`;
+}
+
 function openInTab(s) {
   const dir = cwdOf(s);
   const provider = s.provider || providerOf(s.path);
-  const resume = provider === 'codex' ? 'codex resume ' + s.id : 'claude --resume ' + s.id;
+  const resume = provider === 'codex' ? codexResume(s) : 'claude --resume ' + s.id;
   // Ghostty has no tab config to write and nothing to fire a URI at, so the
   // session opens as a split of the window you are already in.
   if (GHOSTTY) {
