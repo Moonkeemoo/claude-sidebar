@@ -136,7 +136,10 @@ repo reads its docs off the render path and saves what it found — finding noth
 instead of the docs. The last row of the block, `↻ Оновити сервіси · скановано 3 дн тому`, scans the repo
 again when clicked; nothing else does, and it never touches the lists you wrote. Two panes never scan at
 once: a lock file beside the saved one stops the second, and a lock left by a pane that died is taken
-over after 30 seconds. The scan reads README, CLAUDE.md and the `docs/` tree, two levels down at most,
+over after 30 seconds. A click that finds the lock taken is not lost. The row says `оновлюю…` and the
+pane tries again every five seconds until the scan is saved, however many times you click. After two
+minutes it gives up and says the lock is held too long. A save the disk refuses shows as a yellow row
+with the reason, and nothing is scanned again until the next click. The scan reads README, CLAUDE.md and the `docs/` tree, two levels down at most,
 80 files and the first 256 KB of each. Fenced examples are skipped. Nothing is read from
 `node_modules`, a dot-folder, a symlink, a lockfile, or a file named like a secret. A link counts only
 when it names a project inside a service the pane knows: a Vercel project (not Vercel's docs), a Figma

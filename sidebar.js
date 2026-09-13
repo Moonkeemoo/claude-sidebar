@@ -732,7 +732,8 @@ const SERVICE_DOCS = 80;              // files read per scan
 const SERVICE_DOC_BYTES = 256 * 1024; // bytes read of any one of them
 const FOUND_BYTES = 1024 * 1024;      // the saved scans of every repo together
 const FOUND_PROJECTS = 100;           // repos kept there, the most recently scanned
-const SCAN_RETRY = 5 * 1000;          // until a repo has a saved scan: how soon to try again after a busy lock
+const SCAN_RETRY = 5 * 1000;          // how soon a scan still owed tries again after a busy lock
+const SCAN_TRIES = 24;                // busy that many times in a row (two minutes) is said, not waited on
 const LOCK_STALE = 30 * 1000;         // a lock older than this belongs to a pane that died mid-scan
 
 // http(s) only, no user:password@, nothing in the query that reads like a
@@ -945,8 +946,13 @@ function writeFound(reg) {
   for (const k of keys.slice(FOUND_PROJECTS)) delete reg.projects[k];
   fs.mkdirSync(path.dirname(FOUND_FILE), { recursive: true });
   const tmp = FOUND_FILE + '.' + process.pid + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(reg, null, 1));
-  fs.renameSync(tmp, FOUND_FILE);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(reg, null, 1));
+    fs.renameSync(tmp, FOUND_FILE);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { }   // no half-written file left beside the real one
+    throw e;
+  }
 }
 
 // One scanning pane at a time, across every pane on the machine: the lock is a
@@ -992,18 +998,44 @@ function scanAndSave(dir, refresh) {
   } finally { unlockFound(); }
 }
 
-// «Оновити сервіси»: the same scan, this time over whatever was saved. The manual
-// lists are separate files and are not touched.
+// What this pane still owes a repo, kept until a save succeeds: a refresh someone
+// clicked (the first scan is owed simply by there being no saved one), how many
+// times in a row the lock was busy, and what went wrong if it stopped trying. A
+// busy lock is tried again every SCAN_RETRY, SCAN_TRIES times; a save that
+// throws, or a lock busy that long, stops the retries and puts the reason on
+// screen until the next click. Nothing is owed once a save lands, so a repo that
+// has its answer is never scanned again on its own.
+const owed = new Map();   // repo key → { refresh, tries, error }
+
+function runScan(dir, key) {
+  const was = owed.get(key) || { refresh: false, tries: 0, error: '' };
+  let saved;
+  try { saved = scanAndSave(dir, was.refresh); } catch (e) {
+    owed.set(key, { ...was, error: 'не вдалося зберегти сканування (' + String(e.code || e.message).slice(0, 40) + ')' });
+    return;
+  }
+  if (saved) { owed.delete(key); return; }
+  const tries = was.tries + 1;
+  owed.set(key, { ...was, tries, error: tries >= SCAN_TRIES ? 'інша панель довго тримає замок сканування' : '' });
+}
+
+// «Оновити сервіси»: the same scan, this time over whatever was saved. A second
+// click while one is still owed is the same request. The manual lists are
+// separate files and are not touched.
 function refreshServices(dir) {
-  const job = 'services:' + rootKey(dir);
-  if ((later.get(job) || {}).busy) return;
-  later.delete(job);
-  slow(job, SCAN_RETRY, () => scanAndSave(dir, true));
+  const key = rootKey(dir);
+  const was = owed.get(key);
+  if (was && was.refresh && !was.error) return;
+  owed.set(key, { refresh: true, tries: 0, error: '' });
+  const job = 'services:' + key;
+  if (!(later.get(job) || {}).busy) later.delete(job);   // now, not after SCAN_RETRY
+  slow(job, SCAN_RETRY, () => runScan(dir, key));
 }
 
 // Everything the block needs for one repo. The key is the repo, so a pane that
 // moves to another project never shows the last one's services. slow() is asked
-// only while the repo has no saved scan; once it has one, nothing here scans.
+// only while a scan is owed — the repo has no saved one, or a refresh was
+// clicked — and nothing stopped it; once the save lands, nothing here scans.
 function projectServices(dir) {
   const key = rootKey(dir);
   const lists = [personalServices(dir), (() => {
@@ -1012,11 +1044,14 @@ function projectServices(dir) {
   })()].filter(Boolean);
   const detect = !lists.some((l) => l.noDetect);
   const saved = detect ? savedScan(key) : null;
-  if (detect && !saved) slow('services:' + key, SCAN_RETRY, () => scanAndSave(dir, false));
-  const busy = !!(later.get('services:' + key) || {}).busy;
+  let want = owed.get(key);
+  if (want && saved && !want.refresh && !want.error) { owed.delete(key); want = null; }   // another pane saved it
+  const stopped = !!(want && want.error);
+  if (detect && !stopped && (!saved || (want && want.refresh))) slow('services:' + key, SCAN_RETRY, () => runScan(dir, key));
   return {
     rows: mergeServices(lists, saved ? saved.found : []), errors: lists.flatMap((l) => l.errors),
-    detect, pending: detect && !saved, busy, at: saved ? saved.at : 0,
+    detect, pending: detect && !saved && !stopped, busy: detect && !stopped && !!(want && want.refresh),
+    failed: stopped ? want.error : '', at: saved ? saved.at : 0,
   };
 }
 
@@ -1036,6 +1071,7 @@ function serviceItems(info) {
   });
   const count = items.length;
   for (const e of s.errors) items.push({ text: '  ' + sgr('33', e) });
+  if (s.failed) items.push({ text: '  ' + sgr('33', s.failed + ' — ↻ спробує ще раз') });
   if (s.pending) items.push({ text: dim('  шукаю в документації проєкту…') });
   else if (!count) items.push({ text: dim('  нічого не задано й не знайдено в документації') });
   if (!count) items.push({ text: dim('  додай ' + SERVICE_FILE + ' у корінь репозиторію') });

@@ -218,15 +218,24 @@ assert.ok(!opens.some((o) => /\.(js|md)$/.test(o)), 'a file the session wrote is
 // so a scan's answer is there on the first call, and the keys it was asked
 // under recorded.
 const servicesSrc = src.match(/\nconst SERVICE_FILE = [\s\S]*?\nfunction serviceItems[\s\S]*?\n\}\n/)[0];
-function servicesModule(home) {
+// `o.realSlow` swaps in sidebar.js's own slow() — scans then run on their own
+// time, as in the pane — with SCAN_RETRY and SCAN_TRIES cut down by `o.retry`
+// and `o.tries` so a test waits milliseconds. scanCount() counts real doc scans.
+function servicesModule(home, o = {}) {
   const calls = [];
-  const mod = eval('(function(){ const HOME = home; const dim = (s) => s; const sgr = (c, s) => s; const later = new Map();'
-    + ' const slow = (key, ttl, run) => { calls.push([key, ttl]); return run(); };'
+  let section = servicesSrc;
+  if (o.retry) section = section.replace(/\nconst SCAN_RETRY = .*\n/, '\nconst SCAN_RETRY = ' + o.retry + ';\n');
+  if (o.tries) section = section.replace(/\nconst SCAN_TRIES = .*\n/, '\nconst SCAN_TRIES = ' + o.tries + ';\n');
+  const scheduler = o.realSlow
+    ? src.match(/\nconst later = new Map\(\);\n/)[0] + src.match(/\nfunction slow\(key, ttl, run\) \{[\s\S]*?\n\}\n/)[0] + ' const draw = () => {};'
+    : ' const later = new Map(); const slow = (key, ttl, run) => { calls.push([key, ttl]); return run(); };';
+  const mod = eval('(function(){ const HOME = home; const dim = (s) => s; const sgr = (c, s) => s;' + scheduler
     + src.match(/\nconst FENCE = .*\n/)[0] + src.match(/\nfunction readSlice[\s\S]*?\n\}\n/)[0]
-    + src.match(/\nfunction ago[\s\S]*?\n\}\n/)[0] + servicesSrc
+    + src.match(/\nfunction ago[\s\S]*?\n\}\n/)[0] + section
+    + '\nlet scanned = 0; const scanDocs = servicesInDocs; servicesInDocs = (d) => { scanned++; return scanDocs(d); };'
     + '\nreturn { safeUrl, matchService, serviceList, servicesInDocs, mergeServices, projectServices, serviceItems, rootKey,'
     + ' scanAndSave, refreshServices, PERSONAL_SERVICES, FOUND_FILE, FOUND_LOCK, SERVICE_CAP, SERVICE_DOCS, SERVICE_DOC_BYTES,'
-    + ' SCAN_RETRY, LOCK_STALE }; })()');
+    + ' SCAN_RETRY, LOCK_STALE, scanCount: () => scanned }; })()');
   return { ...mod, calls };
 }
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
@@ -1025,4 +1034,75 @@ assert.deepStrictEqual(ctrl, [], 'control characters in sidebar.js, lines ' + ct
 assert.ok(/target\.startsWith\('http:\/\/'\)/.test(src), 'openExternal lost its http guard');
 assert.ok(/fs\.existsSync\(target\)/.test(src), 'openExternal lost its existence guard');
 
-console.log('sidebar OK — вписується у 5 розмірів вікна, ' + checked + ' клікабельних рядків збігаються з рендером, блоки гортаються, миша під охороною');
+// ---- a scan that is owed is kept owed, under the real slow() ----
+// The synchronous slow() further up runs every scan inside the call that asked
+// for it, which hides how scans are scheduled. With the real one a refresh that
+// meets a lock held by another pane has to stay owed and land by itself once the
+// lock goes; a lock held too long, or a save that fails, has to say so and stop
+// trying until the next click; and a repo whose answer is saved is never scanned
+// on its own again.
+const nap = (ms) => new Promise((r) => setTimeout(r, ms));
+async function eventually(pred, what, ms = 3000) {
+  for (const end = Date.now() + ms; Date.now() < end; await nap(10)) if (pred()) return;
+  assert.fail('timed out waiting until ' + what);
+}
+async function orchestration() {
+  const home = tmp('sidebar-svc-async-');
+  const repo = tmp('sidebar-svc-async-repo-');
+  fs.mkdirSync(path.join(repo, '.git'));
+  const m = servicesModule(home, { realSlow: true, retry: 40, tries: 5 });
+  m.projectServices(repo);
+  await eventually(() => !m.projectServices(repo).pending, 'the first scan was saved');
+  assert.deepStrictEqual([m.projectServices(repo).rows, m.scanCount()], [[], 1]);
+
+  put(repo, 'README.md', 'аналітика: https://eu.posthog.com/project/4242');
+  fs.writeFileSync(m.FOUND_LOCK, 'another pane');             // another pane is saving
+  m.refreshServices(repo);
+  m.refreshServices(repo);                                      // clicked twice: one request
+  await nap(120);
+  let s = m.projectServices(repo);
+  assert.deepStrictEqual([s.busy, s.failed, s.rows.length], [true, '', 0], 'the refresh gave up or pretended to finish while the lock was held');
+  assert.strictEqual(m.scanCount(), 1, 'something scanned while the lock was held');
+  fs.unlinkSync(m.FOUND_LOCK);                                  // the other pane is done
+  await eventually(() => m.projectServices(repo).rows.length === 1, 'the refresh landed without a second click');
+  s = m.projectServices(repo);
+  assert.deepStrictEqual([s.rows.map((r) => r.label), s.busy, s.failed], [['PostHog'], false, '']);
+  assert.strictEqual(m.scanCount(), 2, 'two clicks and a busy lock made more than one scan');
+  for (let i = 0; i < 6; i++) { await nap(50); m.projectServices(repo); }
+  assert.strictEqual(m.scanCount(), 2, 'a repo with its answer saved kept being scanned');
+
+  fs.writeFileSync(m.FOUND_LOCK, 'a pane that holds on');     // held past SCAN_TRIES retries
+  m.refreshServices(repo);
+  for (let i = 0; i < 12; i++) { await nap(50); m.projectServices(repo); }
+  s = m.projectServices(repo);
+  assert.deepStrictEqual([s.failed, s.busy], ['інша панель довго тримає замок сканування', false]);
+  const held = m.serviceItems({ dir: repo }).items;
+  assert.ok(held.some((i) => /довго тримає замок/.test(i.text)) && held.some((i) => i.refresh === repo), 'a stuck refresh is not on screen with a way to retry');
+  assert.deepStrictEqual(held.filter((i) => i.open).map((i) => i.open), ['https://eu.posthog.com/project/4242'], 'the saved answer went missing while stuck');
+  fs.unlinkSync(m.FOUND_LOCK);
+
+  const home2 = tmp('sidebar-svc-async2-');
+  const repo2 = tmp('sidebar-svc-async2-repo-');
+  fs.mkdirSync(path.join(repo2, '.git'));
+  const f = servicesModule(home2, { realSlow: true, retry: 40, tries: 5 });
+  fs.mkdirSync(f.FOUND_FILE, { recursive: true });             // a folder where the file goes: every save fails
+  f.projectServices(repo2);
+  await eventually(() => !!f.projectServices(repo2).failed, 'the failed save was reported');
+  const failed = f.serviceItems({ dir: repo2 }).items;
+  assert.ok(failed.some((i) => /^\s*не вдалося зберегти сканування/.test(i.text)), failed.map((i) => i.text).join(' | '));
+  assert.ok(!failed.some((i) => /шукаю/.test(i.text)), 'a failed save still says it is searching');
+  assert.ok(failed.some((i) => i.refresh === repo2), 'a failed save offers no way to try again');
+  const tried = f.scanCount();
+  for (let i = 0; i < 6; i++) { await nap(50); f.projectServices(repo2); }
+  assert.strictEqual(f.scanCount(), tried, 'a save that fails kept rescanning on its own');
+  assert.deepStrictEqual(fs.readdirSync(path.dirname(f.FOUND_FILE)).filter((n) => /\.tmp$/.test(n)), [], 'a failed save left its temp file');
+  fs.rmSync(f.FOUND_FILE, { recursive: true });
+  f.refreshServices(repo2);
+  await eventually(() => { const t = f.projectServices(repo2); return !t.failed && !t.busy && !t.pending; }, 'a click after the disk recovered saved the scan');
+  assert.ok(fs.statSync(f.FOUND_FILE).isFile());
+  for (const d of [home, repo, home2, repo2]) fs.rmSync(d, { recursive: true, force: true });
+}
+
+orchestration().then(() => {
+  console.log('sidebar OK — вписується у 5 розмірів вікна, ' + checked + ' клікабельних рядків збігаються з рендером, блоки гортаються, миша під охороною');
+}, (e) => { console.error(e); process.exit(1); });
