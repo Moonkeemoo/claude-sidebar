@@ -58,10 +58,12 @@ three hours, then the plan, media, project services and links of the session it 
 ── СЕРВІСИ 3 ────────────────────────────────────────
   дашборди цього проєкту — клік відкриває
 
-  Figma  www.figma.com/design/AbCdEfGhIjKlMnOp…  лендінг
+  Figma  www.figma.com/design/AbCdEfGhIjKlMnOp…  лендінг  · пошук
   PostHog  eu.posthog.com/project/12345  project 12345  · docs/analytics.md
-  Jira  посилання не задано
-  ↻ Оновити сервіси  · скановано 2 дн тому
+  Hetzner  немає доступу
+  пошук 2 год тому: знайдено 1, без посилання 1
+  ⌕ Знайти й додати сервіси  · один запуск Claude
+  ↻ Оновити з документації  · скановано 2 дн тому
 
 ── ЛІНКИ 17 ─────────────────────────────────────────
   адреси, які сесія назвала — клік відкриває
@@ -133,7 +135,7 @@ the pane itself goes on drawing. A saved edit to either file shows on the next f
 Then comes what the project's docs link to, found by one scan per repo. The first pane that shows a
 repo reads its docs off the render path and saves what it found — finding nothing included — in
 `~/.claude/sidebar-services-found.json`. Every pane after it, and the same pane restarted, reads that file
-instead of the docs. The last row of the block, `↻ Оновити сервіси · скановано 3 дн тому`, scans the repo
+instead of the docs. The block's last row, `↻ Оновити з документації · скановано 3 дн тому`, scans the repo
 again when clicked; nothing else does, and it never touches the lists you wrote. Two panes never scan at
 once: a lock file beside the saved one stops the second, and a lock left by a pane that died is taken
 over after 30 seconds. A click that finds the lock taken is not lost. The row says `оновлюю…` and the
@@ -149,6 +151,22 @@ links into one project are one row, with the doc that named it at the end, and a
 no link gives way to a found one for the same service. `"detect": false` in either list turns the
 docs off for that repo. A link the session printed stays in ЛІНКИ: a session saying something once
 is not the project using it.
+
+The docs hold only links someone already wrote down. `⌕ Знайти й додати сервіси` finds the rest. A
+click starts one non-interactive Claude run in the repo, which takes a minute or two and costs that
+run's tokens on your subscription. It reads the repo and asks the accounts this machine is already
+signed in to: Jira through the claude.ai Atlassian connector, Figma through the Figma connector, and the
+Vercel projects the signed-in Vercel CLI lists. Hetzner, Search Console and Meta Ads have no connector
+here, and PostHog's connector is a single command that can change things as well as read them, so the
+run is not given it. A link for one of those still lands when the repo itself names the project or the
+account. What the run finds shows as rows marked `· пошук`, fills the written placeholders for the same
+services and survives a restart. What it could not link says why in place of `посилання не задано`:
+`немає доступу`, `не знайдено`, or `кілька кандидатів — не вибрав` when more than one fitted and nothing
+decided between them. While it runs, the block says `… шукаю через підключені акаунти`, with
+`✕ Скасувати пошук` under it; another pane shows `шукає інша панель` and starts nothing. It stops itself
+after five minutes. A failed or cancelled run says so and keeps the last answer. Nothing but that click
+starts a run, and the run can only read: it is given read, list and search tools and nothing else, and
+the pane checks its answer and saves it itself. CLAUDE.md lists the exact fence.
 
 The files a session wrote used to have this block. They are still read — that is how a session
 started in a folder above a repo is placed in it — but a list of them recorded the work rather than
@@ -837,9 +855,10 @@ existing file. Insert one stray line into a renderer and it goes red.
 ## What it deliberately does not do
 
 Of what Claude Code keeps, it reads the transcripts in `~/.claude/projects/*/*.jsonl`. It never writes to
-a transcript or to a repo, and never talks to Claude. Besides what `--install` writes, the one file it
-writes on its own is `~/.claude/sidebar-services-found.json`, with a lock beside it while a scan runs:
-the saved answer of the one docs scan per project that fills СЕРВІСИ.
+a transcript or to a repo. It talks to Claude only when you click `⌕ Знайти й додати сервіси`, and then
+as one read-only run that keeps no session. Besides what `--install` writes, the one file it writes on
+its own is `~/.claude/sidebar-services-found.json`, with a lock beside it while it saves: the answers of
+the docs scan and of that search, per project, that fill СЕРВІСИ.
 
 Only the newest 3 MB of a transcript is parsed. Sessions reach 100 MB, and reading one whole on every
 switch costs a second and the memory to match — hence the `+` on truncated counts.
@@ -856,6 +875,7 @@ and Warp on Windows does not support them anyway.
 | `SIDEBAR_NO_LAUNCH=1` | write the tab config, do not fire the URI |
 | `SIDEBAR_TERMINAL=ghostty` \| `warp` | say which terminal this is instead of working it out |
 | `SIDEBAR_HITS=1` | dump the row-to-click and row-to-block maps to stderr on every frame |
+| `SIDEBAR_CLAUDE`, `SIDEBAR_VERCEL` | the `claude` and `vercel` the service search runs, when not the npm install; a `.js` runs under node |
 | `COLUMNS`, `LINES` | the pane size to lay out for when stdout is not a terminal |
 
 The `SIDEBAR_ONCE` modes skip the alternate screen and the mouse, so their output pipes cleanly into

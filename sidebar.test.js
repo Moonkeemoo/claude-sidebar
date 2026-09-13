@@ -221,20 +221,27 @@ const servicesSrc = src.match(/\nconst SERVICE_FILE = [\s\S]*?\nfunction service
 // `o.realSlow` swaps in sidebar.js's own slow() — scans then run on their own
 // time, as in the pane — with SCAN_RETRY and SCAN_TRIES cut down by `o.retry`
 // and `o.tries` so a test waits milliseconds. scanCount() counts real doc scans.
+// `o.discoveryMs` and `o.discoveryBytes` cut the search's time and output limits.
 function servicesModule(home, o = {}) {
   const calls = [];
   let section = servicesSrc;
-  if (o.retry) section = section.replace(/\nconst SCAN_RETRY = .*\n/, '\nconst SCAN_RETRY = ' + o.retry + ';\n');
-  if (o.tries) section = section.replace(/\nconst SCAN_TRIES = .*\n/, '\nconst SCAN_TRIES = ' + o.tries + ';\n');
+  const set = (name, value) => { if (value) section = section.replace(new RegExp('\\nconst ' + name + ' = .*\\n'), '\nconst ' + name + ' = ' + value + ';\n'); };
+  set('SCAN_RETRY', o.retry);
+  set('SCAN_TRIES', o.tries);
+  set('DISCOVERY_MS', o.discoveryMs);
+  set('DISCOVERY_BYTES', o.discoveryBytes);
+  set('PANE', o.pane);                 // two panes in one test process need two pane ids
   const scheduler = o.realSlow
-    ? src.match(/\nconst later = new Map\(\);\n/)[0] + src.match(/\nfunction slow\(key, ttl, run\) \{[\s\S]*?\n\}\n/)[0] + ' const draw = () => {};'
+    ? src.match(/\nconst later = new Map\(\);\n/)[0] + src.match(/\nfunction slow\(key, ttl, run\) \{[\s\S]*?\n\}\n/)[0]
     : ' const later = new Map(); const slow = (key, ttl, run) => { calls.push([key, ttl]); return run(); };';
-  const mod = eval('(function(){ const HOME = home; const dim = (s) => s; const sgr = (c, s) => s;' + scheduler
-    + src.match(/\nconst FENCE = .*\n/)[0] + src.match(/\nfunction readSlice[\s\S]*?\n\}\n/)[0]
-    + src.match(/\nfunction ago[\s\S]*?\n\}\n/)[0] + section
+  const mod = eval('(function(){ const HOME = home; const dim = (s) => s; const sgr = (c, s) => s; const draw = () => {};'
+    + ' const { spawn } = require("child_process");' + scheduler
+    + src.match(/\nfunction readSlice[\s\S]*?\n\}\n/)[0] + src.match(/\nfunction ago[\s\S]*?\n\}\n/)[0]
+    + src.match(/\nconst VERCEL = [\s\S]*?\nfunction vercelInDocs[\s\S]*?\n\}\n/)[0] + section   // FENCE comes with it
     + '\nlet scanned = 0; const scanDocs = servicesInDocs; servicesInDocs = (d) => { scanned++; return scanDocs(d); };'
     + '\nreturn { safeUrl, matchService, serviceList, servicesInDocs, mergeServices, projectServices, serviceItems, rootKey,'
-    + ' scanAndSave, refreshServices, PERSONAL_SERVICES, FOUND_FILE, FOUND_LOCK, SERVICE_CAP, SERVICE_DOCS, SERVICE_DOC_BYTES,'
+    + ' scanAndSave, refreshServices, discoverServices, cancelDiscovery, readDiscovery, discoveryArgs, workerEnv, discovering,'
+    + ' PERSONAL_SERVICES, FOUND_FILE, FOUND_LOCK, SERVICE_CAP, SERVICE_DOCS, SERVICE_DOC_BYTES, DISCOVERY_READ, DISCOVERY_DENY,'
     + ' SCAN_RETRY, LOCK_STALE, scanCount: () => scanned }; })()');
   return { ...mod, calls };
 }
@@ -342,7 +349,7 @@ assert.deepStrictEqual(two.calls, [['services:' + two.rootKey(repoA), two.SCAN_R
 // ---- the docs are scanned once per repo, and the answer is kept ----
 // The owner asked for one automatic pass (2026-09-13): a scanned repo is read
 // back from ~/.claude/sidebar-services-found.json by every pane after the first,
-// an empty answer included, and only «Оновити сервіси» scans it again.
+// an empty answer included, and only «Оновити з документації» scans it again.
 two.projectServices(repoA);
 assert.strictEqual(two.calls.length, 1, 'a scanned repo was scanned again');
 const saved = JSON.parse(fs.readFileSync(two.FOUND_FILE, 'utf8'));
@@ -385,14 +392,18 @@ const bare = tmp('sidebar-svc-bare-');
 // The first frame is still searching (slow() answers on a later one), and offers
 // no refresh of a scan that has not happened; the next shows the empty answer.
 const searching = two.serviceItems({ dir: bare });
-assert.deepStrictEqual(searching.items.map((i) => i.text.trim()), ['шукаю в документації проєкту…', 'додай .sidebar-services.json у корінь репозиторію']);
+assert.deepStrictEqual(searching.items.map((i) => i.text.trim()), [
+  'шукаю в документації проєкту…', 'додай .sidebar-services.json у корінь репозиторію', '⌕ Знайти й додати сервіси  · один запуск Claude',
+]);
 const empty = two.serviceItems({ dir: bare });
 assert.strictEqual(empty.count, 0);
 assert.deepStrictEqual(empty.items.map((i) => i.text.trim()), [
-  'нічого не задано й не знайдено в документації', 'додай .sidebar-services.json у корінь репозиторію', '↻ Оновити сервіси  · скановано щойно',
+  'нічого не задано й не знайдено в документації', 'додай .sidebar-services.json у корінь репозиторію',
+  '⌕ Знайти й додати сервіси  · один запуск Claude', '↻ Оновити з документації  · скановано щойно',
 ]);
 assert.ok(empty.items.every((i) => !i.open), 'the empty state must open nothing');
-assert.strictEqual(empty.items[2].refresh, bare, 'the refresh row does not carry its repo');
+assert.strictEqual(empty.items[2].discover, bare, 'the search row does not carry its repo');
+assert.strictEqual(empty.items[3].refresh, bare, 'the refresh row does not carry its repo');
 
 // ---- and on screen: the block, its rows and what they open ----
 // Real renders of sessions working in those repos, in a home of their own so
@@ -468,7 +479,7 @@ transcript(scannedFile, scanned);
 const scannedView = renderIn('1', scannedFile, 76, 40);
 const scannedRows = serviceRows(scannedView).rows;
 assert.ok(scannedRows.some((r) => r.open === 'https://eu.posthog.com/project/4242' && r.text.includes('docs/analytics.md')), JSON.stringify(scannedRows));
-const refreshRow = scannedRows.find((r) => r.text.includes('Оновити сервіси'));
+const refreshRow = scannedRows.find((r) => r.text.includes('Оновити з документації'));
 assert.ok(refreshRow && /скановано 3 год тому/.test(refreshRow.text), 'no refresh row with the scan age: ' + JSON.stringify(scannedRows));
 assert.strictEqual(scannedView.hits[refreshRow.i].refresh, scanned, 'the refresh row does not carry its repo in the click map');
 assert.strictEqual(fs.statSync(foundFile).mtimeMs, untouched, 'a pane that found a saved scan rewrote the file');
@@ -761,7 +772,7 @@ const refreshClick = eval('(function(){ let cursor = 0, hover = -1, chartMode = 
   + 'function onWheel() {} function refreshServices(dir) { refreshed = dir; }'
   + src.match(/\nfunction onMouse[\s\S]*?\n\}\n/)[0]
   + '\nreturn (next) => { hit = next; refreshed = null; const redraw = onMouse(0, 2, true); return { refreshed, redraw }; }; })()');
-assert.deepStrictEqual(refreshClick({ refresh: '/work/landing' }), { refreshed: '/work/landing', redraw: true }, 'a click on «Оновити сервіси» did not rescan');
+assert.deepStrictEqual(refreshClick({ refresh: '/work/landing' }), { refreshed: '/work/landing', redraw: true }, 'a click on «Оновити з документації» did not rescan');
 const agent = ing.newState();
 for (const line of [
   { content: [{ type: 'tool_use', id: 'a1', name: 'Agent', input: { description: 'first' } }] },
@@ -1103,6 +1114,179 @@ async function orchestration() {
   for (const d of [home, repo, home2, repo2]) fs.rmSync(d, { recursive: true, force: true });
 }
 
-orchestration().then(() => {
+// ---- «Знайти й додати сервіси»: one run on a click, fenced in and checked ----
+// No model runs here: SIDEBAR_CLAUDE and SIDEBAR_VERCEL point at two small node
+// scripts. The Claude stand-in records how it was started and answers what the
+// scenario file says, as a real run would print it; the Vercel stand-in lists
+// one team and one project.
+async function discovery() {
+  const bin = tmp('sidebar-disc-bin-');
+  const scenario = path.join(bin, 'scenario.json');
+  const runs = path.join(bin, 'runs.jsonl');
+  const fakeClaude = path.join(bin, 'claude.js');
+  const fakeVercel = path.join(bin, 'vercel.js');
+  fs.writeFileSync(fakeClaude, [
+    "const fs = require('fs');",
+    'const sc = JSON.parse(fs.readFileSync(process.env.FAKE_SCENARIO, "utf8"));',
+    "let input = ''; process.stdin.on('data', (d) => { input += d; }).on('end', () => {",
+    '  const env = {}; for (const k of ["CLAUDECODE", "ANTHROPIC_API_KEY", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_ENTRYPOINT"]) env[k] = process.env[k] || null;',
+    '  fs.appendFileSync(sc.runs, JSON.stringify({ pid: process.pid, argv: process.argv.slice(2), cwd: process.cwd(), env, input }) + "\\n");',
+    '  setTimeout(() => {',
+    '    if (sc.big) process.stdout.write("x".repeat(sc.big));',
+    '    else if (sc.raw !== undefined) process.stdout.write(sc.raw);',
+    '    else process.stdout.write(JSON.stringify(sc.result));',
+    '    process.exitCode = sc.code || 0;',
+    '  }, sc.delay || 0);',
+    '});',
+  ].join('\n'));
+  fs.writeFileSync(fakeVercel, [
+    'const a = process.argv.slice(2).join(" ");',
+    'if (a.startsWith("teams ls")) console.log(JSON.stringify({ teams: [{ id: "team_1", slug: "acme", name: "Acme", current: true }] }));',
+    'else if (a.startsWith("project ls")) console.log(JSON.stringify({ projects: [{ name: "landing", id: "prj_1", latestProductionUrl: "https://landing.vercel.app" }] }));',
+    'else process.exit(1);',
+  ].join('\n'));
+  const answer = (services) => ({ type: 'result', subtype: 'success', is_error: false, structured_output: { services } });
+  const play = (sc) => fs.writeFileSync(scenario, JSON.stringify({ runs, ...sc }));
+  const ran = () => (fs.existsSync(runs) ? fs.readFileSync(runs, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+  const saved = { SIDEBAR_CLAUDE: process.env.SIDEBAR_CLAUDE, SIDEBAR_VERCEL: process.env.SIDEBAR_VERCEL, FAKE_SCENARIO: process.env.FAKE_SCENARIO,
+    CLAUDECODE: process.env.CLAUDECODE, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY, CLAUDE_CODE_SESSION_ID: process.env.CLAUDE_CODE_SESSION_ID };
+  Object.assign(process.env, { SIDEBAR_CLAUDE: fakeClaude, SIDEBAR_VERCEL: fakeVercel, FAKE_SCENARIO: scenario,
+    CLAUDECODE: '1', ANTHROPIC_API_KEY: 'sk-must-not-reach-the-run', CLAUDE_CODE_SESSION_ID: 'the-pane-s-own' });
+  try {
+    const home = tmp('sidebar-disc-home-');
+    const repo = tmp('sidebar-disc-repo-');
+    const other = tmp('sidebar-disc-other-');
+    for (const r of [repo, other]) fs.mkdirSync(path.join(r, '.git'));
+    put(repo, 'README.md', 'Задачі живуть у Jira, проєкт FUND. Дизайн у Figma.');       // an identifier, no link
+    const manual = path.join(repo, '.sidebar-services.json');
+    fs.writeFileSync(manual, JSON.stringify({ services: [{ label: 'Jira' }, { label: 'Figma' }, { label: 'Hetzner' }, { label: 'Google Search Console' }] }));
+    const manualBytes = fs.readFileSync(manual);
+    const JIRA = 'https://acme.atlassian.net/jira/software/projects/FUND/boards/3';
+    const GSC = 'https://search.google.com/search-console?resource_id=sc-domain%3Aexample.org';
+    play({ delay: 400, result: answer([
+      { provider: 'jira', status: 'found', url: JIRA, label: 'FUND', evidence: 'getVisibleJiraProjects: FUND on acme' },
+      { provider: 'vercel', status: 'found', url: 'https://vercel.com/acme/landing', evidence: 'vercel CLI: acme/landing' },
+      { provider: 'vercel', status: 'found', url: 'https://vercel.com/acme/guessed', evidence: 'named like the repo' },   // not listed: a guess
+      { provider: 'search-console', status: 'found', url: GSC, evidence: 'docs' },
+      { provider: 'figma', status: 'ambiguous', reason: 'two files called Landing' },
+      { provider: 'hetzner', status: 'no_access', reason: 'no Hetzner tool' },
+      { provider: 'posthog', status: 'found', url: 'javascript:alert(1)' },
+      { provider: 'meta-ads', status: 'found', url: 'https://user:pw@adsmanager.facebook.com/adsmanager/manage/campaigns?act=1' },
+    ]) });
+
+    // Nothing runs before a click: not a frame, not a second one, not the empty state.
+    const pane = servicesModule(home, { realSlow: true, retry: 40, pane: process.ppid });   // a live pid that is not this process
+    for (let i = 0; i < 5; i++) { pane.projectServices(repo); pane.serviceItems({ dir: repo }); await nap(20); }
+    assert.deepStrictEqual(ran(), [], 'a search ran before anyone clicked');
+
+    // A click, a second click, and a click in another pane: one run.
+    const otherPane = servicesModule(home, { realSlow: true, retry: 40 });
+    pane.discoverServices(repo);
+    pane.discoverServices(repo);
+    await eventually(() => ran().length === 1, 'the run started');
+    otherPane.discoverServices(repo);
+    await eventually(() => otherPane.projectServices(repo).search.running === 'elsewhere', 'the other pane saw the run as someone else\'s');
+    assert.strictEqual(pane.projectServices(repo).search.running, 'here');
+    assert.ok(pane.serviceItems({ dir: repo }).items.some((i) => i.cancelDiscovery === repo), 'no way to cancel the run that is out');
+    pane.projectServices(other);                                     // the pane moved to another project meanwhile
+    await eventually(() => !pane.projectServices(repo).search.running, 'the run finished');
+    assert.strictEqual(ran().length, 1, 'more than one run for one repo');
+
+    // How it was started: fenced in, in the repo, without the pane's session or an API key.
+    const run = ran()[0];
+    const argv = run.argv;
+    const after = (flag) => { const at = argv.indexOf(flag); const next = argv.findIndex((a, i) => i > at && a.startsWith('--')); return argv.slice(at + 1, next < 0 ? argv.length : next); };
+    for (const flag of ['-p', '--restricted', '--no-session-persistence', '--disable-slash-commands']) assert.ok(argv.includes(flag), 'the run lacks ' + flag);
+    assert.deepStrictEqual([after('--tools'), after('--permission-mode'), after('--permission-prompts'), after('--output-format')],
+      [['Read,Glob,Grep'], ['default'], ['none'], ['json']]);
+    assert.deepStrictEqual(after('--allowedTools'), pane.DISCOVERY_READ, 'the run may use more than the read tools');
+    assert.ok(pane.DISCOVERY_READ.every((t) => /__(get|search|whoami)/.test(t)), 'a tool on the read list is not a read');
+    for (const t of ['mcp__claude_ai_Atlassian_Rovo__createJiraIssue', 'mcp__figma__use_figma', 'mcp__posthog']) assert.ok(after('--disallowedTools').includes(t), t + ' is not denied');
+    assert.ok(!argv.some((a) => /^--(model|dangerously|allow-dangerously|resume|continue)/.test(a) || a === 'bypassPermissions'), 'the run chose a model or skipped permissions: ' + argv.join(' '));
+    assert.strictEqual(fs.realpathSync(run.cwd), fs.realpathSync(repo));
+    assert.deepStrictEqual(run.env, { CLAUDECODE: null, ANTHROPIC_API_KEY: null, CLAUDE_CODE_SESSION_ID: null, CLAUDE_CODE_ENTRYPOINT: null });
+    assert.ok(/Discovery only/.test(run.input) && run.input.includes('"project":"landing"') && run.input.includes('"repo":"' + path.basename(repo) + '"'), 'the prompt lacks its rules or facts');
+    assert.ok(!run.input.includes('sk-must-not-reach-the-run'), 'a key reached the prompt');
+
+    // What landed: the confirmed links, the placeholders they fill, the reasons for the rest; nothing guessed or unsafe.
+    const rows = pane.serviceItems({ dir: repo }).items;
+    const opened = rows.filter((i) => i.open).map((i) => i.open);
+    assert.deepStrictEqual(opened.sort(), [GSC, JIRA, 'https://vercel.com/acme/landing'].sort(), JSON.stringify(opened));
+    const text = rows.map((i) => i.text.trim());
+    assert.ok(text.some((t) => /^Figma {2}кілька кандидатів — не вибрав/.test(t)), 'the ambiguous Figma was not said: ' + text.join(' | '));
+    assert.ok(text.some((t) => /^Hetzner {2}немає доступу/.test(t)), 'Hetzner without access was not said');
+    assert.ok(!text.some((t) => /^(Jira|Google Search Console) {2}посилання не задано/.test(t)), 'a placeholder stayed beside the link that fills it');
+    assert.ok(text.some((t) => /^пошук щойно: знайдено 3, без посилання 2/.test(t)), text.join(' | '));
+    assert.ok(rows.some((i) => i.discover === repo), 'no way to search again');
+    assert.ok(fs.readFileSync(manual).equals(manualBytes), 'the manual list was written');
+    const reg = JSON.parse(fs.readFileSync(pane.FOUND_FILE, 'utf8')).projects[pane.rootKey(repo)];
+    assert.deepStrictEqual(reg.discovery.found.map((f) => f.id).sort(), ['jira', 'search-console', 'vercel']);
+    assert.ok(Array.isArray(reg.found), 'the docs scan went missing beside the search');
+    assert.ok(!(pane.rootKey(other) in JSON.parse(fs.readFileSync(pane.FOUND_FILE, 'utf8')).projects) || !JSON.parse(fs.readFileSync(pane.FOUND_FILE, 'utf8')).projects[pane.rootKey(other)].discovery, 'the answer landed in the project the pane moved to');
+
+    // A pane started later shows it without running anything.
+    const later = servicesModule(home, { realSlow: true, retry: 40 });
+    assert.ok(later.serviceItems({ dir: repo }).items.some((i) => i.open === JIRA), 'the answer did not survive a restart');
+    assert.strictEqual(ran().length, 1);
+
+    // Cancel: the run's process is gone, the last answer stays.
+    play({ delay: 30000, result: answer([]) });
+    pane.discoverServices(repo);
+    await eventually(() => ran().length === 2, 'the second run started');
+    pane.cancelDiscovery(repo);
+    await eventually(() => !pane.projectServices(repo).search.running, 'the cancelled run stopped');
+    assert.throws(() => process.kill(ran()[1].pid, 0), 'the cancelled run is still alive');
+    const cancelled = pane.serviceItems({ dir: repo }).items;
+    assert.ok(cancelled.some((i) => /пошук скасовано/.test(i.text)) && cancelled.some((i) => i.open === JIRA), 'a cancel lost the last answer or did not say so');
+
+    // Time, size, a broken answer, a missing login, a missing binary: each said, the last answer kept, no retry.
+    const quick = servicesModule(home, { realSlow: true, retry: 40, discoveryMs: 400, discoveryBytes: 2000 });
+    const cases = [
+      [{ delay: 30000, result: answer([]) }, /час вийшов/],
+      [{ big: 50000 }, /відповідь більша за/],
+      [{ raw: 'not json at all' }, /відповідь не читається/],
+      [{ result: { type: 'result', subtype: 'success', is_error: true, result: 'Invalid API key · Please run /login' }, code: 1 }, /не залогінений/],
+      [{ result: answer('nope') }, /нема списку сервісів/],
+    ];
+    for (const [sc, said] of cases) {
+      play(sc);
+      const before = ran().length;
+      quick.discoverServices(repo);
+      await eventually(() => !quick.projectServices(repo).search.running && ran().length === before + 1, 'the run for ' + said + ' finished');
+      const shown = quick.serviceItems({ dir: repo }).items;
+      assert.ok(shown.some((i) => said.test(i.text)), 'not said: ' + said + ' in ' + shown.map((i) => i.text).join(' | '));
+      assert.ok(shown.some((i) => i.open === JIRA), 'a failure lost the last answer: ' + said);
+      await nap(150);
+      assert.strictEqual(ran().length, before + 1, 'a failure was retried on its own: ' + said);
+    }
+    process.env.SIDEBAR_CLAUDE = path.join(bin, 'no-such-claude.exe');
+    quick.discoverServices(repo);
+    await eventually(() => quick.serviceItems({ dir: repo }).items.some((i) => /не знайдено claude/.test(i.text)), 'a missing claude was not said');
+    process.env.SIDEBAR_CLAUDE = fakeClaude;
+
+    // The pane on screen: the found link is a row that opens it, and the search is a click.
+    const shownHome = home;
+    fs.mkdirSync(path.join(shownHome, '.claude', 'projects', 'p'), { recursive: true });
+    const onScreen = path.join(os.tmpdir(), 'sidebar-disc-screen.jsonl');
+    transcript(onScreen, repo);
+    const v = spawnSync(process.execPath, [SIDEBAR, onScreen], {
+      env: { ...process.env, HOME: shownHome, USERPROFILE: shownHome, SIDEBAR_ONCE: '1', SIDEBAR_HITS: '1', COLUMNS: '90', LINES: '50' }, encoding: 'utf8',
+    });
+    assert.strictEqual(v.status, 0, v.stderr.slice(0, 300));
+    const map = JSON.parse(v.stderr);
+    const lines = v.stdout.split('\n').map(strip);
+    const jiraRow = Object.entries(map.hits).find(([, h]) => h.open === JIRA);
+    assert.ok(jiraRow && lines[+jiraRow[0]].includes('acme.atlassian.n') && map.blocks[jiraRow[0]] === 'СЕРВІСИ', 'the found Jira board is not a row that opens it');
+    const searchRow = Object.entries(map.hits).find(([, h]) => h.discover);
+    assert.ok(searchRow && fs.realpathSync(searchRow[1].discover) === fs.realpathSync(repo) && lines[+searchRow[0]].includes('Знайти й додати сервіси'), 'the search row is not in the click map');
+    assert.strictEqual(ran().length, 7, 'a render started a run');
+    for (const d of [bin, home, repo, other]) fs.rmSync(d, { recursive: true, force: true });
+    fs.rmSync(onScreen, { force: true });
+  } finally {
+    for (const [k, value] of Object.entries(saved)) { if (value === undefined) delete process.env[k]; else process.env[k] = value; }
+  }
+}
+
+orchestration().then(discovery).then(() => {
   console.log('sidebar OK — вписується у 5 розмірів вікна, ' + checked + ' клікабельних рядків збігаються з рендером, блоки гортаються, миша під охороною');
 }, (e) => { console.error(e); process.exit(1); });

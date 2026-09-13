@@ -12,6 +12,20 @@ rename. It holds provider links and the doc that named them: never a transcript,
 never the owner's own `~/.claude/sidebar-services.json`, which the pane only reads. Anything else the
 pane starts writing is the same mistake as writing to a transcript.
 
+A second exception, also the owner's (2026-09-13, "я нажимаю кнопку ... і сайдбар сам все додає і
+шукає"): a click on «Знайти й додати сервіси» starts one non-interactive `claude -p` run in that repo.
+That click is the only thing that ever starts one — never a frame, the tick, a start or a project switch
+— and it is the only time the pane talks to Claude. The run is fenced in by its flags, not by its
+prompt: `--restricted` (no owner settings, so no bypassPermissions, hooks or plugins, and no tool that
+runs code), `--tools Read,Glob,Grep`, `--permission-prompts none` with `--allowedTools` naming only read,
+list and search tools (`DISCOVERY_READ`), the write side denied by name (`DISCOVERY_DENY`),
+`--no-session-persistence`, no `--model`, API keys and session markers stripped from its environment. It
+has five minutes and 1 MiB of output, and a cancel or a timeout kills its process tree. It writes
+nothing; the pane checks its answer (every link through `safeUrl` and `matchService`, a Vercel project
+only if the Vercel CLI listed it) and saves it under `discovery` in `sidebar-services-found.json`.
+Adding a tool to `DISCOVERY_READ` means reading what that tool can do first — an `exec` that runs any
+command is not a read however it is described, which is why PostHog's is not there.
+
 Commits, comments and docs in English. The strings the pane prints are Ukrainian, because that is
 the language its user reads — keep them Ukrainian.
 

@@ -888,14 +888,19 @@ function servicesInDocs(dir) {
   return found;
 }
 
+// Which service a row is about: a provider's id or its name, however the owner
+// spelt it («Google Search Console» is search-console), else its own label.
+const PROVIDER_OF = new Map(PROVIDERS.flatMap((p) => [[p.id, p.id], [p.name.toLowerCase(), p.id]]));
+const serviceOf = (r) => PROVIDER_OF.get(String(r.id || '').toLowerCase()) || PROVIDER_OF.get(r.label.toLowerCase()) || (r.id || r.label).toLowerCase();
+
 // Written down first, in the order written, the owner's before the repo's; then
-// what the docs link to that nobody wrote down. Two rows for one dashboard
-// become the first of them, and a written row with no link gives way to a real
-// link for the same service, wherever that came from.
+// what was found that nobody wrote down. Two rows for one dashboard become the
+// first of them, and a written row with no link gives way to a real link for
+// the same service, wherever that came from.
 function mergeServices(lists, found) {
   const rows = [];
   const seen = new Set();
-  const name = (r) => (r.id || r.label).toLowerCase();
+  const name = serviceOf;
   const detected = found.map((f) => ({ id: f.id, label: f.name, url: f.url, note: f.note, from: f.from }));
   for (const r of [...lists.flatMap((l) => l.items), ...detected]) {
     const u = r.url && safeUrl(r.url);
@@ -915,17 +920,24 @@ function mergeServices(lists, found) {
 // again until someone asks. What is read back is checked again as if the docs
 // had just said it: a hand-edited or damaged file cannot put a link on screen
 // that no provider recognises.
-function savedScan(key) {
+function savedEntry(key) {
   const v = readServiceFile(FOUND_FILE, FOUND_BYTES);
   const all = v && v.json && typeof v.json.projects === 'object' && v.json.projects;
   const entry = all && Object.hasOwn(all, key) ? all[key] : null;
-  if (!entry || typeof entry !== 'object' || !Array.isArray(entry.found)) return null;
-  const found = entry.found.filter((f) => {
-    const u = f && typeof f.from === 'string' && f.from.length < 200 && safeUrl(f.url);
-    const m = u && matchService(u);
-    return m && m.id === f.id;
-  }).map((f) => ({ id: f.id, name: matchService(new URL(f.url)).name, url: f.url, note: typeof f.note === 'string' ? f.note.slice(0, 60) : '', from: f.from }));
-  return { at: Number(entry.at) || 0, found: found.slice(0, SERVICE_CAP) };
+  return entry && typeof entry === 'object' ? entry : null;
+}
+
+const keepFound = (list) => list.filter((f) => {
+  const u = f && typeof f.from === 'string' && f.from.length < 200 && safeUrl(f.url);
+  const m = u && matchService(u);
+  return m && m.id === f.id;
+}).map((f) => ({ id: f.id, name: matchService(new URL(f.url)).name, url: f.url, note: typeof f.note === 'string' ? f.note.slice(0, 60) : '', from: f.from }))
+  .slice(0, SERVICE_CAP);
+
+function savedScan(key) {
+  const entry = savedEntry(key);
+  if (!entry || !Array.isArray(entry.found)) return null;
+  return { at: Number(entry.at) || 0, found: keepFound(entry.found) };
 }
 
 // Straight from disk, under the lock: another pane may have saved a moment ago.
@@ -942,7 +954,8 @@ function loadFound() {
 // Temp file and rename, so a pane that dies mid-write leaves the old file whole;
 // the most recently scanned FOUND_PROJECTS repos are what is kept.
 function writeFound(reg) {
-  const keys = Object.keys(reg.projects).sort((a, b) => (Number(reg.projects[b].at) || 0) - (Number(reg.projects[a].at) || 0));
+  const touched = (e) => Math.max(Number(e && e.at) || 0, Number(e && e.discovery && (e.discovery.at || e.discovery.failedAt)) || 0);
+  const keys = Object.keys(reg.projects).sort((a, b) => touched(reg.projects[b]) - touched(reg.projects[a]));
   for (const k of keys.slice(FOUND_PROJECTS)) delete reg.projects[k];
   fs.mkdirSync(path.dirname(FOUND_FILE), { recursive: true });
   const tmp = FOUND_FILE + '.' + process.pid + '.tmp';
@@ -992,7 +1005,7 @@ function scanAndSave(dir, refresh) {
       .filter((f) => !seen.has(f.id + ':' + f.key) && seen.add(f.id + ':' + f.key))
       .slice(0, SERVICE_CAP)
       .map(({ id, name, url, note, from }) => ({ id, name, url, note, from }));
-    reg.projects[key] = { at: Date.now(), found };
+    reg.projects[key] = { ...reg.projects[key], at: Date.now(), found };   // a search's answer beside it stays
     writeFound(reg);
     return true;
   } finally { unlockFound(); }
@@ -1032,36 +1045,363 @@ function refreshServices(dir) {
   slow(job, SCAN_RETRY, () => runScan(dir, key));
 }
 
+// ---- «Знайти й додати сервіси»: one Claude run, on a click ----
+// The docs scan finds only links someone already wrote down. The owner asked on
+// 2026-09-13 for a button that finds the rest itself ("я нажимаю кнопку ... і
+// сайдбар сам все додає і шукає"), knowing a run costs tokens. A click runs one
+// non-interactive Claude in the repo, with the read side of the account
+// connectors this machine already has. Nothing else starts one: not a frame, the
+// tick, a start or a project switch.
+//
+// The run is fenced in rather than trusted. --restricted drops the owner's own
+// settings (no bypassPermissions, hooks or plugins) and every tool that runs
+// code; --tools leaves Read, Glob and Grep, confined to the repo;
+// --permission-prompts none denies every tool not on DISCOVERY_READ, which names
+// only read, list and search calls, and DISCOVERY_DENY names the write side of
+// the same connectors besides. PostHog's connector is a single `exec` that can
+// change anything, so it is not offered at all. The run keeps no session and
+// writes nothing: its answer is checked here, against the providers the docs
+// scan knows and, for Vercel, against the projects the Vercel CLI lists, and
+// saved here, beside the docs scan, under the same lock.
+const DISCOVERY_MS = 5 * 60 * 1000;              // one run, from click to answer
+const DISCOVERY_BYTES = 1024 * 1024;             // what a run may print
+const DISCOVERY_STALE = DISCOVERY_MS + 60 * 1000; // a run claimed longer ago than this is not running
+const CLI_MS = 30 * 1000;                        // one Vercel CLI call
+const ROVO = 'mcp__claude_ai_Atlassian_Rovo__';
+const DISCOVERY_READ = [
+  ...['getAccessibleAtlassianResources', 'getVisibleJiraProjects', 'searchJiraIssuesUsingJql', 'getJiraIssue', 'search'].map((t) => ROVO + t),
+  ...['whoami', 'get_libraries', 'search_design_system', 'get_metadata'].map((t) => 'mcp__figma__' + t),
+];
+const DISCOVERY_DENY = [
+  ...['addCommentToJiraIssue', 'addTeamworkGraphContext', 'addWorklogToJiraIssue', 'createCompassComponent',
+    'createCompassComponentRelationship', 'createCompassCustomFieldDefinition', 'createConfluenceFooterComment',
+    'createConfluenceInlineComment', 'createConfluencePage', 'createIssueLink', 'createJiraIssue', 'editJiraIssue',
+    'transitionJiraIssue', 'updateConfluencePage', 'fetch'].map((t) => ROVO + t),
+  ...['add_code_connect_map', 'create_generative_plugin', 'create_new_file', 'create_shader', 'download_assets', 'export_video',
+    'generate_diagram', 'generate_figma_design', 'send_code_connect_mappings', 'update_generative_plugin', 'update_shader',
+    'upload_assets', 'use_figma', 'weave_cancel_tool_run', 'weave_run_tool', 'weave_upload_asset'].map((t) => 'mcp__figma__' + t),
+  'mcp__claude_ai_Google_Drive', 'mcp__claude_ai_Context7', 'mcp__posthog',
+];
+// The owner's figma connector is user config, which --restricted skips; naming it
+// here brings it back with the sign-in it already has, and nothing else with it.
+const DISCOVERY_MCP = JSON.stringify({ mcpServers: { figma: { type: 'http', url: 'https://mcp.figma.com/mcp' } } });
+const DISCOVERY_STATUS = ['found', 'no_access', 'not_found', 'ambiguous'];
+const DISCOVERY_SCHEMA = JSON.stringify({
+  type: 'object', additionalProperties: false, required: ['services'],
+  properties: { services: { type: 'array', maxItems: 20, items: {
+    type: 'object', additionalProperties: false, required: ['provider', 'status'],
+    properties: {
+      provider: { enum: PROVIDERS.map((p) => p.id) }, status: { enum: DISCOVERY_STATUS },
+      label: { type: 'string', maxLength: 80 }, url: { type: 'string', maxLength: 500 },
+      evidence: { type: 'string', maxLength: 300 }, reason: { type: 'string', maxLength: 300 },
+    },
+  } } },
+});
+
+// The native binary behind an npm shim: a .cmd needs a shell, and a shell is where
+// an argument stops being one argument. SIDEBAR_CLAUDE and SIDEBAR_VERCEL point
+// elsewhere; a .js there runs under this node.
+function toolCommand(own, win, bare) {
+  const exe = own || (process.platform === 'win32' ? win : bare);
+  if (!own && process.platform === 'win32' && !fs.existsSync(exe)) return null;
+  return /\.[cm]?js$/.test(exe) ? [process.execPath, [exe]] : [exe, []];
+}
+const npmGlobal = (...p) => path.join(process.env.APPDATA || '', 'npm', 'node_modules', ...p);
+const claudeCommand = () => toolCommand(process.env.SIDEBAR_CLAUDE, npmGlobal('@anthropic-ai', 'claude-code', 'bin', 'claude.exe'), 'claude');
+const vercelCommand = () => toolCommand(process.env.SIDEBAR_VERCEL, npmGlobal('vercel', 'dist', 'vc.js'), 'vercel');
+
+// A child process with a time limit and a byte limit, killed with its whole tree
+// past either, or when the job it belongs to is cancelled. Resolves, never rejects.
+function killTree(pid) {
+  if (!pid) return;
+  if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true });
+  else { try { process.kill(-pid, 'SIGTERM'); } catch { try { process.kill(pid, 'SIGTERM'); } catch { } } }
+}
+function runBounded([cmd, pre], args, o) {
+  return new Promise((resolve) => {
+    const out = [];
+    let size = 0, err = '', over = false, timedOut = false, child;
+    try {
+      child = spawn(cmd, [...pre, ...args], { cwd: o.cwd, env: o.env || process.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+    } catch (e) { resolve({ error: e.code || e.message }); return; }
+    const stop = () => killTree(child.pid);
+    if (o.job) o.job.stop = stop;
+    const timer = setTimeout(() => { timedOut = true; stop(); }, o.ms);
+    child.stdout.on('data', (d) => { if (over) return; size += d.length; if (size > o.bytes) { over = true; stop(); } else out.push(d); });
+    child.stderr.on('data', (d) => { if (err.length < 4096) err += d; });
+    child.on('error', (e) => { clearTimeout(timer); resolve({ error: e.code || e.message }); });
+    child.on('close', (code) => { clearTimeout(timer); resolve({ code, out: Buffer.concat(out).toString('utf8'), err, over, timedOut }); });
+    child.stdin.on('error', () => { });
+    child.stdin.end(o.input || '');
+  });
+}
+
+// What the Vercel CLI signed in on this machine lists, read-only: the teams and
+// their projects. A repo linked with `vercel link` also names its own project.
+async function vercelFacts(dir) {
+  const cmd = vercelCommand();
+  if (!cmd) return { error: 'Vercel CLI не встановлено', projects: [] };
+  const json = async (args) => {
+    const r = await runBounded(cmd, [...args, '--format', 'json', '--non-interactive'], { cwd: dir, ms: CLI_MS, bytes: 512 * 1024 });
+    if (r.error || r.code !== 0) throw new Error(r.error || String(r.err).trim().split('\n').slice(-1)[0] || 'exit ' + r.code);
+    return JSON.parse(r.out.slice(r.out.indexOf('{')));
+  };
+  try {
+    const teams = ((await json(['teams', 'ls'])).teams || []).filter((t) => t && typeof t.slug === 'string').slice(0, 5);
+    const projects = [];
+    for (const t of teams) {
+      for (const p of ((await json(['project', 'ls', '--scope', t.slug])).projects || []).slice(0, 100)) {
+        if (p && typeof p.name === 'string') projects.push({ team: t.slug, project: p.name, site: typeof p.latestProductionUrl === 'string' ? p.latestProductionUrl : '' });
+      }
+    }
+    let linked = null;
+    try {
+      const l = JSON.parse(unbom(fs.readFileSync(path.join(dir, '.vercel', 'project.json'), 'utf8')));
+      const t = teams.find((x) => x.id === l.orgId);
+      if (t && typeof l.projectName === 'string') linked = { team: t.slug, project: l.projectName };
+    } catch { }
+    return { projects, linked };
+  } catch (e) { return { error: 'Vercel CLI: ' + String(e.message).slice(0, 80), projects: [] }; }
+}
+
+function repoServices(dir) {
+  const v = readServiceFile(path.join(dir, SERVICE_FILE));
+  return v && (v.error ? { items: [], errors: [SERVICE_FILE + ' ' + v.error] } : serviceList(v.json, SERVICE_FILE));
+}
+
+// What the run is told: the repo, its GitHub remote, where its docs say it is
+// deployed, the services the owner named and the links already known, and what
+// the Vercel CLI lists. No token, no file contents; the run reads the repo itself.
+async function discoveryFacts(dir) {
+  const manual = [personalServices(dir), repoServices(dir)].filter(Boolean).flatMap((l) => l.items);
+  const saved = savedScan(rootKey(dir));
+  return {
+    repo: path.basename(dir), github: githubOf(dir), sites: vercelInDocs(dir),
+    named: manual.map((i) => i.label),
+    known: [...manual.map((i) => i.url), ...(saved ? saved.found.map((f) => f.url) : [])].filter(Boolean),
+    vercel: await vercelFacts(dir),
+  };
+}
+
+function discoveryPrompt(facts) {
+  return [
+    'You are a one-off discovery job started by a click in the claude-sidebar pane. The current directory is a repository.',
+    'Find which external service dashboards belong to this project and answer with the JSON the schema asks for, nothing else.',
+    '',
+    'Rules:',
+    '- Discovery only. Never create, edit, comment on, transition, deploy or delete anything, in the repository or in any service.',
+    '- Use only the repository files (Read, Glob, Grep), the facts below, and the read-only tools of the connected accounts (Atlassian for Jira, Figma).',
+    '- Report status "found" only when a file or a tool result shows that this exact board, file or project belongs to this repository, and name it in "evidence": the tool and the identifier, or the file path. Never guess an id, and never build a URL from a name alone.',
+    '- Several candidates and nothing that decides between them: status "ambiguous", no url, the candidates in "reason". No tool for a provider: "no_access". A tool but no match: "not_found".',
+    '- Vercel: report only a team/project pair listed in facts.vercel, as https://vercel.com/<team>/<project>.',
+    '- Jira: https://<site>.atlassian.net/jira/software/projects/<KEY>/boards/<id> or https://<site>.atlassian.net/browse/<KEY>-<n>. Figma: https://www.figma.com/design/<fileKey>/<name>.',
+    '- Never put tokens, passwords, emails or other secrets into the answer.',
+    '- Report on each of these providers once: ' + PROVIDERS.map((p) => p.id).join(', ') + '.',
+    '',
+    'Facts collected by the pane: ' + JSON.stringify(facts),
+  ].join('\n');
+}
+
+function discoveryArgs() {
+  return ['-p', '--restricted', '--tools', 'Read,Glob,Grep', '--permission-mode', 'default', '--permission-prompts', 'none',
+    '--no-session-persistence', '--disable-slash-commands', '--output-format', 'json', '--json-schema', DISCOVERY_SCHEMA,
+    '--mcp-config', DISCOVERY_MCP, '--allowedTools', ...DISCOVERY_READ, '--disallowedTools', ...DISCOVERY_DENY];
+}
+
+// The pane's environment minus what would make the run something else: the
+// markers of a Claude session the pane may have been started from, and API keys,
+// so the run is billed to the subscription like the owner's own sessions.
+const WORKER_STRIP = /^(CLAUDECODE|AI_AGENT|ANTHROPIC_API_KEY|ANTHROPIC_AUTH_TOKEN|CLAUDE_PID|CLAUDE_AGENT_SDK_VERSION|CLAUDE_CODE_(ENTRYPOINT|SESSION_ID|CHILD_SESSION|MESSAGING_SOCKET|MESSAGING_TOKEN|SESSION_ATTENDED))$/i;
+const workerEnv = () => Object.fromEntries(Object.entries(process.env).filter(([k]) => !WORKER_STRIP.test(k)));
+
+const clean = (s, n) => (typeof s === 'string' ? s.replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, n) : '');
+
+// The run's answer, checked as if a stranger had written it: the provider, the
+// status and every link must be ones this pane knows, a Vercel project must be
+// one the Vercel CLI listed, and a link only lands if matchService agrees it is
+// that provider's dashboard.
+function readDiscovery(res, facts) {
+  if (res.error) return { error: res.error === 'ENOENT' ? 'не знайдено claude' : 'claude не запустився (' + clean(res.error, 30) + ')' };
+  if (res.timedOut) return { error: 'час вийшов (' + DISCOVERY_MS / 60000 + ' хв)' };
+  if (res.over) return { error: 'відповідь більша за ' + DISCOVERY_BYTES / 1024 + ' КБ' };
+  let r = null;
+  try { r = JSON.parse(res.out); } catch { }
+  const said = r && typeof r.result === 'string' ? r.result : String(res.err || '');
+  if (!r && res.code === 0) return { error: 'відповідь не читається' };
+  if (!r || r.type !== 'result' || r.is_error || res.code !== 0) {
+    if (/log ?in|auth|credential|401|api key/i.test(said + ' ' + (r && r.subtype || ''))) return { error: 'claude не залогінений — запусти claude і /login' };
+    return { error: 'claude відповів помилкою' + (r && r.subtype ? ' (' + clean(r.subtype, 30) + ')' : '') };
+  }
+  let body = r.structured_output;
+  if (!body) { try { body = JSON.parse(said.replace(/^\s*```(?:json)?|```\s*$/g, '')); } catch { } }
+  if (!body || !Array.isArray(body.services)) return { error: 'у відповіді нема списку сервісів' };
+  const listed = new Set(((facts.vercel || {}).projects || []).map((v) => v.team + '/' + v.project));
+  const found = [];
+  const unresolved = [];
+  const seen = new Set();
+  let rejected = 0;
+  for (const s of body.services.slice(0, 50)) {
+    if (!s || !PROVIDER_OF.has(s.provider) || s.provider !== PROVIDER_OF.get(s.provider) || !DISCOVERY_STATUS.includes(s.status)) { rejected++; continue; }
+    if (s.status !== 'found') { unresolved.push({ id: s.provider, status: s.status, reason: clean(s.reason, 160) }); continue; }
+    const u = safeUrl(s.url);
+    const m = u && matchService(u);
+    if (!m || m.id !== s.provider || (m.id === 'vercel' && !listed.has(m.key)) || seen.has(m.id + ':' + m.key)) { rejected++; continue; }
+    seen.add(m.id + ':' + m.key);
+    const evidence = clean(s.evidence, 200);
+    found.push({ id: m.id, name: m.name, url: m.url, note: clean(s.label, 60) || m.note, from: 'пошук', evidence: /token|secret|password|bearer/i.test(evidence) ? '' : evidence });
+  }
+  return { found: found.slice(0, SERVICE_CAP), unresolved, rejected };
+}
+
+// Under the lock, retried while another pane holds it for a moment. Throws what the disk throws.
+async function withFound(change) {
+  for (let i = 0; i < 50; i++) {
+    if (lockFound()) {
+      try {
+        const reg = loadFound();
+        if (change(reg) !== false) writeFound(reg);
+        return true;
+      } finally { unlockFound(); }
+    }
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return false;
+}
+
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === 'EPERM'; } };
+
+// What the last run left in the file, checked again on the way in; `running` is
+// a claim by a pane that is still alive and within the time a run may take.
+function savedDiscovery(key) {
+  const e = savedEntry(key);
+  const d = e && e.discovery;
+  if (!d || typeof d !== 'object') return null;
+  const since = Number(d.running && d.running.since) || 0;
+  const pane = Number(d.running && d.running.pane) || 0;
+  return {
+    at: Number(d.at) || 0, found: Array.isArray(d.found) ? keepFound(d.found) : [],
+    unresolved: (Array.isArray(d.unresolved) ? d.unresolved : [])
+      .filter((u) => u && PROVIDER_OF.get(u.id) === u.id && DISCOVERY_STATUS.includes(u.status))
+      .map((u) => ({ id: u.id, status: u.status, reason: clean(u.reason, 160) })),
+    error: clean(d.error, 120), cancelled: !!d.cancelled,
+    running: pane && Date.now() - since < DISCOVERY_STALE && alive(pane) ? { pane, since } : null,
+  };
+}
+
+// One run per repo across every pane: the claim is written under the lock, and a
+// pane that finds another's live claim leaves it alone. The run's answer
+// replaces the last one only when it came back readable; a failure keeps the
+// last good answer and says why beside it.
+const PANE = process.pid;         // whose claim a running search is
+const discovering = new Map();   // repo key → the run this pane owns
+let exitHooked = false;
+
+async function claimDiscovery(job) {
+  let mine = false;
+  const ok = await withFound((reg) => {
+    const e = reg.projects[job.key] || {};
+    const d = e.discovery || {};
+    const r = d.running || {};
+    if (r.pane && r.pane !== PANE && Date.now() - Number(r.since) < DISCOVERY_STALE && alive(Number(r.pane))) return false;
+    reg.projects[job.key] = { ...e, discovery: { ...d, running: { pane: PANE, since: job.since } } };
+    mine = true;
+  });
+  if (!ok) throw new Error('замок сканування зайнятий');
+  return mine;
+}
+
+async function finishDiscovery(job, outcome) {
+  try {
+    const ok = await withFound((reg) => {
+      const e = reg.projects[job.key] || {};
+      const d = e.discovery || {};
+      const next = outcome.found
+        ? { at: Date.now(), found: outcome.found, unresolved: outcome.unresolved, rejected: outcome.rejected || 0 }
+        : { ...d, error: outcome.error || '', cancelled: !!outcome.cancelled, failedAt: Date.now() };
+      delete next.running;
+      if (outcome.found) { delete next.error; delete next.cancelled; }
+      reg.projects[job.key] = { ...e, discovery: next };
+    });
+    if (!ok) job.error = 'не вдалося зберегти результат пошуку (замок зайнятий)';
+  } catch (e) { job.error = 'не вдалося зберегти результат пошуку (' + clean(String(e.code || e.message), 40) + ')'; }
+  job.done = true;
+  if (!job.error) discovering.delete(job.key);   // a failed save stays on screen until the next click
+}
+
+// A click on «Знайти й додати сервіси». The repo is fixed now: moving the pane to
+// another project while the run is out does not move the answer.
+function discoverServices(dir) {
+  const key = rootKey(dir);
+  const was = discovering.get(key);
+  if (was && !was.done) return;                     // clicked again while it runs: the same run
+  const job = { dir, key, since: Date.now(), stop: null, cancelled: false, done: false, error: '' };
+  discovering.set(key, job);
+  if (!exitHooked) {                                // the pane quitting takes its runs with it
+    exitHooked = true;
+    process.on('exit', () => { for (const j of discovering.values()) if (j.stop && !j.done) j.stop(); });
+  }
+  (async () => {
+    if (!(await claimDiscovery(job))) { discovering.delete(key); return; }   // another pane's run; its answer arrives through the file
+    const facts = await discoveryFacts(dir);
+    if (job.cancelled) return finishDiscovery(job, { cancelled: true });
+    const cmd = claudeCommand();
+    const res = cmd
+      ? await runBounded(cmd, discoveryArgs(), { cwd: dir, env: workerEnv(), input: discoveryPrompt(facts), ms: DISCOVERY_MS, bytes: DISCOVERY_BYTES, job })
+      : { error: 'ENOENT' };
+    return finishDiscovery(job, job.cancelled ? { cancelled: true } : readDiscovery(res, facts));
+  })().catch((e) => finishDiscovery(job, { error: 'пошук упав (' + clean(String(e.message), 60) + ')' })).finally(() => draw());
+}
+
+function cancelDiscovery(dir) {
+  const job = discovering.get(rootKey(dir));
+  if (!job || job.done) return;
+  job.cancelled = true;
+  if (job.stop) job.stop();
+}
+
 // Everything the block needs for one repo. The key is the repo, so a pane that
 // moves to another project never shows the last one's services. slow() is asked
 // only while a scan is owed — the repo has no saved one, or a refresh was
 // clicked — and nothing stopped it; once the save lands, nothing here scans.
+// A search's answer is read from the same file and never started from here.
 function projectServices(dir) {
   const key = rootKey(dir);
-  const lists = [personalServices(dir), (() => {
-    const v = readServiceFile(path.join(dir, SERVICE_FILE));
-    return v && (v.error ? { items: [], errors: [SERVICE_FILE + ' ' + v.error] } : serviceList(v.json, SERVICE_FILE));
-  })()].filter(Boolean);
+  const lists = [personalServices(dir), repoServices(dir)].filter(Boolean);
   const detect = !lists.some((l) => l.noDetect);
   const saved = detect ? savedScan(key) : null;
   let want = owed.get(key);
   if (want && saved && !want.refresh && !want.error) { owed.delete(key); want = null; }   // another pane saved it
   const stopped = !!(want && want.error);
   if (detect && !stopped && (!saved || (want && want.refresh))) slow('services:' + key, SCAN_RETRY, () => runScan(dir, key));
+  const found = savedDiscovery(key);
+  const job = discovering.get(key);
+  const here = !!(job && !job.done);
+  const elsewhere = !here && !!(found && found.running && found.running.pane !== PANE);
   return {
-    rows: mergeServices(lists, saved ? saved.found : []), errors: lists.flatMap((l) => l.errors),
+    rows: mergeServices(lists, [...(found ? found.found : []), ...(saved ? saved.found : [])]), errors: lists.flatMap((l) => l.errors),
     detect, pending: detect && !saved && !stopped, busy: detect && !stopped && !!(want && want.refresh),
     failed: stopped ? want.error : '', at: saved ? saved.at : 0,
+    search: {
+      running: here ? 'here' : elsewhere ? 'elsewhere' : '', since: here ? job.since : elsewhere ? found.running.since : 0,
+      error: (job && job.error) || (found && found.error) || '', cancelled: !!(found && found.cancelled && !here),
+      at: found ? found.at : 0, count: found ? found.found.length : 0, unresolved: found ? found.unresolved : [],
+    },
   };
 }
 
+const lately = (at) => { const w = ago(Date.now() - at); return w === 'зараз' ? 'щойно' : w + ' тому'; };
+// What the last search said about a service it could not link, in place of the
+// bare «посилання не задано».
+const UNRESOLVED = { no_access: 'немає доступу', not_found: 'не знайдено', ambiguous: 'кілька кандидатів — не вибрав' };
+
 // A row shows where it goes before it says anything else about it — the start of
 // the address, the way every clickable row in this pane does — then the project
-// inside the service, then the doc that named it, if it was a doc.
+// inside the service, then where it came from: a doc, or the search.
 function serviceItems(info) {
   const s = projectServices(info.dir);
+  const why = new Map(s.search.unresolved.map((u) => [u.id, UNRESOLVED[u.status]]));
   const items = s.rows.map((r) => {
-    if (!r.url) return { text: '  ' + r.label + dim('  посилання не задано' + (r.note ? ' · ' + r.note : '')) };
+    if (!r.url) return { text: '  ' + r.label + dim('  ' + (why.get(serviceOf(r)) || 'посилання не задано') + (r.note ? ' · ' + r.note : '')) };
     const shown = r.url.replace(/^https?:\/\//, '');
     return {
       open: r.url,
@@ -1075,12 +1415,24 @@ function serviceItems(info) {
   if (s.pending) items.push({ text: dim('  шукаю в документації проєкту…') });
   else if (!count) items.push({ text: dim('  нічого не задано й не знайдено в документації') });
   if (!count) items.push({ text: dim('  додай ' + SERVICE_FILE + ' у корінь репозиторію') });
-  // The one way to scan a repo again, with how old the saved scan is.
+  // The search: running, with a way to stop it in the pane that started it; or
+  // what the last one came to, and the button that starts the next.
+  const q = s.search;
+  if (q.running) {
+    const secs = Math.max(0, Math.round((Date.now() - q.since) / 1000));
+    items.push({ text: '  ' + sgr('36', '… ' + (q.running === 'here' ? 'шукаю через підключені акаунти' : 'шукає інша панель')) + dim('  · ' + (secs < 60 ? secs + ' с' : Math.floor(secs / 60) + ' хв')) });
+    if (q.running === 'here') items.push({ cancelDiscovery: info.dir, text: '  ' + dim('✕ ') + 'Скасувати пошук' });
+  } else {
+    if (q.error) items.push({ text: '  ' + sgr('33', 'пошук: ' + q.error) });
+    else if (q.cancelled) items.push({ text: dim('  пошук скасовано') });
+    else if (q.at) items.push({ text: dim('  пошук ' + lately(q.at) + ': знайдено ' + q.count + (q.unresolved.length ? ', без посилання ' + q.unresolved.length : '')) });
+    items.push({ discover: info.dir, text: '  ' + dim('⌕ ') + 'Знайти й додати сервіси' + dim('  · один запуск Claude') });
+  }
+  // The docs scan again, with how old the saved one is.
   if (s.detect && !s.pending) {
-    const when = s.at ? ago(Date.now() - s.at) : '';
     items.push({
       refresh: info.dir,
-      text: '  ' + dim('↻ ') + (s.busy ? 'оновлюю…' : 'Оновити сервіси') + (when ? dim('  · скановано ' + (when === 'зараз' ? 'щойно' : when + ' тому')) : ''),
+      text: '  ' + dim('↻ ') + (s.busy ? 'оновлюю…' : 'Оновити з документації') + (s.at ? dim('  · скановано ' + lately(s.at)) : ''),
     });
   }
   return { items, count };
@@ -2171,6 +2523,8 @@ function panel(out, key, label, items, room, count, focus, empty, note) {
     if (it.session != null) rowHits[out.length] = { session: it.session };
     if (it.pick) rowHits[out.length] = { pick: it.pick };
     if (it.refresh) rowHits[out.length] = { refresh: it.refresh };
+    if (it.discover) rowHits[out.length] = { discover: it.discover };
+    if (it.cancelDiscovery) rowHits[out.length] = { cancelDiscovery: it.cancelDiscovery };
     blockAt[out.length] = key;
     out.push(clip(it.text, W()));
   }
@@ -3275,6 +3629,8 @@ function onMouse(btn, y, press) {
   if (hit.chart) { chartMode = (chartMode + 1) % CHART_MODES.length; return true; }
   if (hit.open) { openExternal(hit.open); return false; }
   if (hit.refresh) { refreshServices(hit.refresh); return true; }   // the row says «оновлюю…» until the scan lands
+  if (hit.discover) { discoverServices(hit.discover); return true; }   // the only thing that starts a search
+  if (hit.cancelDiscovery) { cancelDiscovery(hit.cancelDiscovery); return true; }
   if (hit.pick) {
     if (typeof hit.pick === 'string') pinTo({ path: hit.pick });
     else openPicker();
