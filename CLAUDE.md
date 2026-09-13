@@ -19,10 +19,17 @@ That click is the only thing that ever starts one — never a frame, the tick, a
 prompt: `--restricted` (no owner settings, so no bypassPermissions, hooks or plugins, and no tool that
 runs code), `--tools Read,Glob,Grep`, `--permission-prompts none` with `--allowedTools` naming only read,
 list and search tools (`DISCOVERY_READ`), the write side denied by name (`DISCOVERY_DENY`),
-`--no-session-persistence`, no `--model`, API keys and session markers stripped from its environment. It
-has five minutes and 1 MiB of output, and a cancel or a timeout kills its process tree. It writes
+`--no-session-persistence`, no `--model`, API keys and session markers stripped from its environment.
+The search has one budget, `DISCOVERY_MS` from the click: the wait for the lock, every Vercel CLI call
+and the run all take from it, and each child is the job's `stop`, so a cancel or the deadline kills
+whatever is running and nothing starts after it. That is what lets a claim expire at `DISCOVERY_STALE`
+without a second pane starting a second paid run beside a live one; give any new stage the job too. A
+search writes its end only while the claim is still its own. The run has 1 MiB of output. It writes
 nothing; the pane checks its answer (every link through `safeUrl` and `matchService`, a Vercel project
-only if the Vercel CLI listed it) and saves it under `discovery` in `sidebar-services-found.json`.
+only if the Vercel CLI listed it, and a found link only with its proof in `proof()`) and saves it under
+`discovery` in `sidebar-services-found.json`. The proof shows the run pointed at something real, not
+that the dashboard is the project's; rows say their source for that reason, so do not describe it as
+more.
 Adding a tool to `DISCOVERY_READ` means reading what that tool can do first — an `exec` that runs any
 command is not a read however it is described, which is why PostHog's is not there.
 

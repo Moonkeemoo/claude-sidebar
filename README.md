@@ -159,12 +159,19 @@ signed in to: Jira through the claude.ai Atlassian connector, Figma through the 
 Vercel projects the signed-in Vercel CLI lists. Hetzner, Search Console and Meta Ads have no connector
 here, and PostHog's connector is a single command that can change things as well as read them, so the
 run is not given it. A link for one of those still lands when the repo itself names the project or the
-account. What the run finds shows as rows marked `· пошук`, fills the written placeholders for the same
-services and survives a restart. What it could not link says why in place of `посилання не задано`:
+account. A link lands only with its proof: the repo file that names it, the account tool that showed
+it, or the Vercel project the repo is linked to, and its identifier must appear in that proof. The pane
+checks what it can check: that the file is in the repo and says it, that the tool is one of that
+service's read tools. That shows the run pointed at something real, not that the dashboard is yours,
+so each row says where it came from: `· пошук · docs/…`, `· пошук · акаунт` or `· пошук · Vercel CLI`.
+A link without proof is dropped and counted as `відкинуто`, and it never replaces a link an earlier
+search proved. The rows fill the written placeholders for the same
+services and survive a restart. What it could not link says why in place of `посилання не задано`:
 `немає доступу`, `не знайдено`, or `кілька кандидатів — не вибрав` when more than one fitted and nothing
 decided between them. While it runs, the block says `… шукаю через підключені акаунти`, with
-`✕ Скасувати пошук` under it; another pane shows `шукає інша панель` and starts nothing. It stops itself
-after five minutes. A failed or cancelled run says so and keeps the last answer. Nothing but that click
+`✕ Скасувати пошук` under it; another pane shows `шукає інша панель` and starts nothing. The whole
+search has five minutes from the click, the Vercel CLI included, and a cancel stops whatever it is
+running at that moment. A failed or cancelled run says so and keeps the last answer. Nothing but that click
 starts a run, and the run can only read: it is given read, list and search tools and nothing else, and
 the pane checks its answer and saves it itself. CLAUDE.md lists the exact fence.
 

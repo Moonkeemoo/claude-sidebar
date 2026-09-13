@@ -1063,10 +1063,14 @@ function refreshServices(dir) {
 // writes nothing: its answer is checked here, against the providers the docs
 // scan knows and, for Vercel, against the projects the Vercel CLI lists, and
 // saved here, beside the docs scan, under the same lock.
-const DISCOVERY_MS = 5 * 60 * 1000;              // one run, from click to answer
+// One budget from the click: waiting for the lock, every Vercel CLI call and the
+// run all take from it, so a search that is alive is never older than
+// DISCOVERY_MS plus the kill and the save, and a claim is only let go after that.
+const DISCOVERY_MS = 5 * 60 * 1000;              // one search, from click to answer
 const DISCOVERY_BYTES = 1024 * 1024;             // what a run may print
-const DISCOVERY_STALE = DISCOVERY_MS + 60 * 1000; // a run claimed longer ago than this is not running
-const CLI_MS = 30 * 1000;                        // one Vercel CLI call
+const DISCOVERY_GRACE = 60 * 1000;               // past the deadline: the kill and the save
+const DISCOVERY_STALE = DISCOVERY_MS + DISCOVERY_GRACE; // a claim older than this is not running
+const CLI_MS = 30 * 1000;                        // one Vercel CLI call at most
 const ROVO = 'mcp__claude_ai_Atlassian_Rovo__';
 const DISCOVERY_READ = [
   ...['getAccessibleAtlassianResources', 'getVisibleJiraProjects', 'searchJiraIssuesUsingJql', 'getJiraIssue', 'search'].map((t) => ROVO + t),
@@ -1086,13 +1090,18 @@ const DISCOVERY_DENY = [
 // here brings it back with the sign-in it already has, and nothing else with it.
 const DISCOVERY_MCP = JSON.stringify({ mcpServers: { figma: { type: 'http', url: 'https://mcp.figma.com/mcp' } } });
 const DISCOVERY_STATUS = ['found', 'no_access', 'not_found', 'ambiguous'];
+// Where a found link's proof came from: a file in the repo, a connected
+// account's read tool, or the Vercel CLI's link of this repo. `none` is for the rest.
+const DISCOVERY_SOURCES = ['repo', 'account', 'vercel_cli', 'none'];
+const ACCOUNT_TOOLS = { jira: ROVO, figma: 'mcp__figma__' };
 const DISCOVERY_SCHEMA = JSON.stringify({
   type: 'object', additionalProperties: false, required: ['services'],
   properties: { services: { type: 'array', maxItems: 20, items: {
-    type: 'object', additionalProperties: false, required: ['provider', 'status'],
+    type: 'object', additionalProperties: false, required: ['provider', 'status', 'source', 'evidence'],
     properties: {
-      provider: { enum: PROVIDERS.map((p) => p.id) }, status: { enum: DISCOVERY_STATUS },
+      provider: { enum: PROVIDERS.map((p) => p.id) }, status: { enum: DISCOVERY_STATUS }, source: { enum: DISCOVERY_SOURCES },
       label: { type: 'string', maxLength: 80 }, url: { type: 'string', maxLength: 500 },
+      path: { type: 'string', maxLength: 200 }, tool: { type: 'string', maxLength: 120 },
       evidence: { type: 'string', maxLength: 300 }, reason: { type: 'string', maxLength: 300 },
     },
   } } },
@@ -1111,13 +1120,20 @@ const claudeCommand = () => toolCommand(process.env.SIDEBAR_CLAUDE, npmGlobal('@
 const vercelCommand = () => toolCommand(process.env.SIDEBAR_VERCEL, npmGlobal('vercel', 'dist', 'vc.js'), 'vercel');
 
 // A child process with a time limit and a byte limit, killed with its whole tree
-// past either, or when the job it belongs to is cancelled. Resolves, never rejects.
+// past either, or when the job it belongs to is cancelled. Given a job, it takes
+// only what is left of the job's budget, starts nothing once the job is cancelled
+// or out of time, and holds the job's `stop` while it runs. Resolves, never rejects.
 function killTree(pid) {
   if (!pid) return;
   if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true });
   else { try { process.kill(-pid, 'SIGTERM'); } catch { try { process.kill(pid, 'SIGTERM'); } catch { } } }
 }
+const halted = (job) => job.cancelled || Date.now() >= job.deadline;
 function runBounded([cmd, pre], args, o) {
+  const job = o.job;
+  const ms = job ? Math.min(o.ms, job.deadline - Date.now()) : o.ms;
+  if (job && job.cancelled) return Promise.resolve({ cancelled: true });
+  if (ms <= 0) return Promise.resolve({ timedOut: true });
   return new Promise((resolve) => {
     const out = [];
     let size = 0, err = '', over = false, timedOut = false, child;
@@ -1125,12 +1141,14 @@ function runBounded([cmd, pre], args, o) {
       child = spawn(cmd, [...pre, ...args], { cwd: o.cwd, env: o.env || process.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
     } catch (e) { resolve({ error: e.code || e.message }); return; }
     const stop = () => killTree(child.pid);
-    if (o.job) o.job.stop = stop;
-    const timer = setTimeout(() => { timedOut = true; stop(); }, o.ms);
+    if (job) job.stop = stop;
+    const timer = setTimeout(() => { timedOut = true; stop(); }, ms);
+    // A pid outlives its process only as a number the system may hand out again.
+    const done = (r) => { clearTimeout(timer); if (job && job.stop === stop) job.stop = null; resolve(r); };
     child.stdout.on('data', (d) => { if (over) return; size += d.length; if (size > o.bytes) { over = true; stop(); } else out.push(d); });
     child.stderr.on('data', (d) => { if (err.length < 4096) err += d; });
-    child.on('error', (e) => { clearTimeout(timer); resolve({ error: e.code || e.message }); });
-    child.on('close', (code) => { clearTimeout(timer); resolve({ code, out: Buffer.concat(out).toString('utf8'), err, over, timedOut }); });
+    child.on('error', (e) => done({ error: e.code || e.message }));
+    child.on('close', (code) => done({ code, out: Buffer.concat(out).toString('utf8'), err, over, timedOut }));
     child.stdin.on('error', () => { });
     child.stdin.end(o.input || '');
   });
@@ -1138,27 +1156,32 @@ function runBounded([cmd, pre], args, o) {
 
 // What the Vercel CLI signed in on this machine lists, read-only: the teams and
 // their projects. A repo linked with `vercel link` also names its own project.
-async function vercelFacts(dir) {
+// Every call is the search's child: a cancel kills it, and none starts after one.
+async function vercelFacts(dir, job) {
   const cmd = vercelCommand();
   if (!cmd) return { error: 'Vercel CLI не встановлено', projects: [] };
   const json = async (args) => {
-    const r = await runBounded(cmd, [...args, '--format', 'json', '--non-interactive'], { cwd: dir, ms: CLI_MS, bytes: 512 * 1024 });
+    const r = await runBounded(cmd, [...args, '--format', 'json', '--non-interactive'], { cwd: dir, ms: CLI_MS, bytes: 512 * 1024, job });
+    if (r.cancelled || r.timedOut) throw new Error(r.cancelled ? 'скасовано' : 'час вийшов');
     if (r.error || r.code !== 0) throw new Error(r.error || String(r.err).trim().split('\n').slice(-1)[0] || 'exit ' + r.code);
     return JSON.parse(r.out.slice(r.out.indexOf('{')));
   };
   try {
     const teams = ((await json(['teams', 'ls'])).teams || []).filter((t) => t && typeof t.slug === 'string').slice(0, 5);
     const projects = [];
+    const named = new Map();                          // team + project id → the project's name now
     for (const t of teams) {
       for (const p of ((await json(['project', 'ls', '--scope', t.slug])).projects || []).slice(0, 100)) {
         if (p && typeof p.name === 'string') projects.push({ team: t.slug, project: p.name, site: typeof p.latestProductionUrl === 'string' ? p.latestProductionUrl : '' });
+        if (p && typeof p.name === 'string' && typeof p.id === 'string') named.set(t.slug + ' ' + p.id, p.name);
       }
     }
     let linked = null;
     try {
+      // The link keeps the name the project had when it was linked; its id says what it is called now.
       const l = JSON.parse(unbom(fs.readFileSync(path.join(dir, '.vercel', 'project.json'), 'utf8')));
       const t = teams.find((x) => x.id === l.orgId);
-      if (t && typeof l.projectName === 'string') linked = { team: t.slug, project: l.projectName };
+      if (t && typeof l.projectName === 'string') linked = { team: t.slug, project: named.get(t.slug + ' ' + l.projectId) || l.projectName };
     } catch { }
     return { projects, linked };
   } catch (e) { return { error: 'Vercel CLI: ' + String(e.message).slice(0, 80), projects: [] }; }
@@ -1172,14 +1195,14 @@ function repoServices(dir) {
 // What the run is told: the repo, its GitHub remote, where its docs say it is
 // deployed, the services the owner named and the links already known, and what
 // the Vercel CLI lists. No token, no file contents; the run reads the repo itself.
-async function discoveryFacts(dir) {
+async function discoveryFacts(dir, job) {
   const manual = [personalServices(dir), repoServices(dir)].filter(Boolean).flatMap((l) => l.items);
   const saved = savedScan(rootKey(dir));
   return {
     repo: path.basename(dir), github: githubOf(dir), sites: vercelInDocs(dir),
     named: manual.map((i) => i.label),
     known: [...manual.map((i) => i.url), ...(saved ? saved.found.map((f) => f.url) : [])].filter(Boolean),
-    vercel: await vercelFacts(dir),
+    vercel: await vercelFacts(dir, job),
   };
 }
 
@@ -1191,8 +1214,9 @@ function discoveryPrompt(facts) {
     'Rules:',
     '- Discovery only. Never create, edit, comment on, transition, deploy or delete anything, in the repository or in any service.',
     '- Use only the repository files (Read, Glob, Grep), the facts below, and the read-only tools of the connected accounts (Atlassian for Jira, Figma).',
-    '- Report status "found" only when a file or a tool result shows that this exact board, file or project belongs to this repository, and name it in "evidence": the tool and the identifier, or the file path. Never guess an id, and never build a URL from a name alone.',
-    '- Several candidates and nothing that decides between them: status "ambiguous", no url, the candidates in "reason". No tool for a provider: "no_access". A tool but no match: "not_found".',
+    '- Report status "found" only when a file or a tool result shows that this exact board, file or project belongs to this repository. Never guess an id, and never build a URL from a name alone.',
+    '- Every "found" names its proof. "source": "repo" with "path" set to the repository file (relative path) that names it; or "account" with "tool" set to the exact tool whose result showed it; or "vercel_cli" only for the project facts.vercel.linked names. "evidence": the identifier the url carries (Jira project key, Figma file key, Vercel project name, numeric id) and where it appears. A "found" without this is thrown away.',
+    '- Several candidates and nothing that decides between them: status "ambiguous", no url, the candidates in "reason". No tool for a provider: "no_access". A tool but no match: "not_found". These use "source": "none" and an empty "evidence".',
     '- Vercel: report only a team/project pair listed in facts.vercel, as https://vercel.com/<team>/<project>.',
     '- Jira: https://<site>.atlassian.net/jira/software/projects/<KEY>/boards/<id> or https://<site>.atlassian.net/browse/<KEY>-<n>. Figma: https://www.figma.com/design/<fileKey>/<name>.',
     '- Never put tokens, passwords, emails or other secrets into the answer.',
@@ -1216,11 +1240,41 @@ const workerEnv = () => Object.fromEntries(Object.entries(process.env).filter(([
 
 const clean = (s, n) => (typeof s === 'string' ? s.replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, n) : '');
 
+// A found link lands only with its proof, checked as far as the pane can check
+// it. The evidence must name the identifier the link carries and nothing
+// secret-looking; a repo file must be inside this repo and name that identifier
+// too; an account tool must be one of that provider's read tools; the Vercel CLI
+// speaks only for the project this repo is linked to. That shows the run pointed
+// at something real. It does not prove the dashboard is this project's, which is
+// why the row says where the link came from.
+const SECRETISH = /token|secret|passw|bearer|api[_ -]?key|credential|(^|\/)\.env/i;
+function proof(s, m, dir, facts) {
+  const evidence = clean(s.evidence, 200);
+  const id = m.key.split(/[/:]/).filter(Boolean).pop().toLowerCase();
+  if (!evidence || SECRETISH.test(evidence) || !evidence.toLowerCase().includes(id)) return null;
+  if (s.source === 'repo') {
+    const rel = clean(s.path, 200).replace(/\\/g, '/');
+    const file = path.resolve(dir, rel);
+    let text = '';
+    try { if (rel && !SECRETISH.test(rel) && file.startsWith(path.resolve(dir) + path.sep)) text = readSlice(file, 0, SERVICE_DOC_BYTES); } catch { }
+    return text.toLowerCase().includes(id) ? { source: 'repo', path: rel, evidence, from: 'пошук · ' + rel.slice(-80) } : null;
+  }
+  if (s.source === 'account') {
+    const tool = clean(s.tool, 120);
+    return ACCOUNT_TOOLS[m.id] && tool.startsWith(ACCOUNT_TOOLS[m.id]) && DISCOVERY_READ.includes(tool) ? { source: 'account', tool, evidence, from: 'пошук · акаунт' } : null;
+  }
+  const linked = (facts.vercel || {}).linked;
+  if (s.source === 'vercel_cli' && linked && linked.team + '/' + linked.project === m.key) return { source: 'vercel_cli', evidence, from: 'пошук · Vercel CLI' };
+  return null;
+}
+
 // The run's answer, checked as if a stranger had written it: the provider, the
 // status and every link must be ones this pane knows, a Vercel project must be
-// one the Vercel CLI listed, and a link only lands if matchService agrees it is
-// that provider's dashboard.
-function readDiscovery(res, facts) {
+// one the Vercel CLI listed, a link only lands if matchService agrees it is that
+// provider's dashboard, and a found one needs its proof. A refused entry never
+// wipes that provider's last good link; an answer with nothing usable in it is a
+// failure, and the last answer stays.
+function readDiscovery(res, facts, dir) {
   if (res.error) return { error: res.error === 'ENOENT' ? 'не знайдено claude' : 'claude не запустився (' + clean(res.error, 30) + ')' };
   if (res.timedOut) return { error: 'час вийшов (' + DISCOVERY_MS / 60000 + ' хв)' };
   if (res.over) return { error: 'відповідь більша за ' + DISCOVERY_BYTES / 1024 + ' КБ' };
@@ -1238,24 +1292,27 @@ function readDiscovery(res, facts) {
   const listed = new Set(((facts.vercel || {}).projects || []).map((v) => v.team + '/' + v.project));
   const found = [];
   const unresolved = [];
+  const refused = new Set();
   const seen = new Set();
   let rejected = 0;
   for (const s of body.services.slice(0, 50)) {
-    if (!s || !PROVIDER_OF.has(s.provider) || s.provider !== PROVIDER_OF.get(s.provider) || !DISCOVERY_STATUS.includes(s.status)) { rejected++; continue; }
+    if (!s || typeof s.provider !== 'string' || PROVIDER_OF.get(s.provider) !== s.provider || !DISCOVERY_STATUS.includes(s.status)) { rejected++; continue; }
     if (s.status !== 'found') { unresolved.push({ id: s.provider, status: s.status, reason: clean(s.reason, 160) }); continue; }
     const u = safeUrl(s.url);
     const m = u && matchService(u);
-    if (!m || m.id !== s.provider || (m.id === 'vercel' && !listed.has(m.key)) || seen.has(m.id + ':' + m.key)) { rejected++; continue; }
+    const p = m && m.id === s.provider && !(m.id === 'vercel' && !listed.has(m.key)) && !seen.has(m.id + ':' + m.key) && proof(s, m, dir, facts);
+    if (!p) { rejected++; refused.add(s.provider); continue; }
     seen.add(m.id + ':' + m.key);
-    const evidence = clean(s.evidence, 200);
-    found.push({ id: m.id, name: m.name, url: m.url, note: clean(s.label, 60) || m.note, from: 'пошук', evidence: /token|secret|password|bearer/i.test(evidence) ? '' : evidence });
+    found.push({ id: m.id, name: m.name, url: m.url, note: clean(s.label, 60) || m.note, ...p });
   }
-  return { found: found.slice(0, SERVICE_CAP), unresolved, rejected };
+  if (rejected && !found.length && !unresolved.length) return { error: 'відповідь не пройшла перевірку (відкинуто ' + rejected + ')' };
+  return { found: found.slice(0, SERVICE_CAP), unresolved, rejected, refused: [...refused] };
 }
 
-// Under the lock, retried while another pane holds it for a moment. Throws what the disk throws.
-async function withFound(change) {
-  for (let i = 0; i < 50; i++) {
+// Under the lock, retried while another pane holds it for a moment, and not past
+// a search's cancel or deadline when one is given. Throws what the disk throws.
+async function withFound(change, job) {
+  for (let i = 0; i < 50 && !(job && halted(job)); i++) {
     if (lockFound()) {
       try {
         const reg = loadFound();
@@ -1283,15 +1340,17 @@ function savedDiscovery(key) {
     unresolved: (Array.isArray(d.unresolved) ? d.unresolved : [])
       .filter((u) => u && PROVIDER_OF.get(u.id) === u.id && DISCOVERY_STATUS.includes(u.status))
       .map((u) => ({ id: u.id, status: u.status, reason: clean(u.reason, 160) })),
-    error: clean(d.error, 120), cancelled: !!d.cancelled,
+    error: clean(d.error, 120), cancelled: !!d.cancelled, rejected: Number(d.rejected) || 0,
     running: pane && Date.now() - since < DISCOVERY_STALE && alive(pane) ? { pane, since } : null,
   };
 }
 
 // One run per repo across every pane: the claim is written under the lock, and a
-// pane that finds another's live claim leaves it alone. The run's answer
-// replaces the last one only when it came back readable; a failure keeps the
-// last good answer and says why beside it.
+// pane that finds another's live claim leaves it alone. A search writes its end
+// only while the claim is still its own — pane and start — so a late one never
+// clears or overwrites a search that took over. The answer replaces the last one
+// only when it came back readable; a failure keeps the last good answer and says
+// why beside it.
 const PANE = process.pid;         // whose claim a running search is
 const discovering = new Map();   // repo key → the run this pane owns
 let exitHooked = false;
@@ -1305,24 +1364,31 @@ async function claimDiscovery(job) {
     if (r.pane && r.pane !== PANE && Date.now() - Number(r.since) < DISCOVERY_STALE && alive(Number(r.pane))) return false;
     reg.projects[job.key] = { ...e, discovery: { ...d, running: { pane: PANE, since: job.since } } };
     mine = true;
-  });
-  if (!ok) throw new Error('замок сканування зайнятий');
-  return mine;
+  }, job);
+  return ok ? mine : null;       // null: cancelled, out of time, or the lock stayed busy
 }
 
 async function finishDiscovery(job, outcome) {
+  let mine = false;
   try {
     const ok = await withFound((reg) => {
       const e = reg.projects[job.key] || {};
       const d = e.discovery || {};
-      const next = outcome.found
-        ? { at: Date.now(), found: outcome.found, unresolved: outcome.unresolved, rejected: outcome.rejected || 0 }
-        : { ...d, error: outcome.error || '', cancelled: !!outcome.cancelled, failedAt: Date.now() };
-      delete next.running;
-      if (outcome.found) { delete next.error; delete next.cancelled; }
+      const r = d.running || {};
+      if (r.pane !== PANE || Number(r.since) !== job.since) return false;
+      mine = true;
+      let next;
+      if (outcome.found) {
+        const kept = (Array.isArray(d.found) ? d.found : []).filter((f) => f && outcome.refused.includes(f.id) && !outcome.found.some((n) => n.id === f.id));
+        next = { at: Date.now(), found: [...outcome.found, ...kept].slice(0, SERVICE_CAP), unresolved: outcome.unresolved, rejected: outcome.rejected };
+      } else {
+        next = { ...d, error: outcome.error || '', cancelled: !!outcome.cancelled, failedAt: Date.now() };
+        delete next.running;
+      }
       reg.projects[job.key] = { ...e, discovery: next };
     });
     if (!ok) job.error = 'не вдалося зберегти результат пошуку (замок зайнятий)';
+    else if (!mine && outcome.error) job.error = outcome.error;   // never claimed: said here, not saved
   } catch (e) { job.error = 'не вдалося зберегти результат пошуку (' + clean(String(e.code || e.message), 40) + ')'; }
   job.done = true;
   if (!job.error) discovering.delete(job.key);   // a failed save stays on screen until the next click
@@ -1334,21 +1400,29 @@ function discoverServices(dir) {
   const key = rootKey(dir);
   const was = discovering.get(key);
   if (was && !was.done) return;                     // clicked again while it runs: the same run
-  const job = { dir, key, since: Date.now(), stop: null, cancelled: false, done: false, error: '' };
+  const since = Date.now();
+  const job = { dir, key, since, deadline: since + DISCOVERY_MS, stop: null, cancelled: false, done: false, error: '' };
   discovering.set(key, job);
   if (!exitHooked) {                                // the pane quitting takes its runs with it
     exitHooked = true;
     process.on('exit', () => { for (const j of discovering.values()) if (j.stop && !j.done) j.stop(); });
   }
   (async () => {
-    if (!(await claimDiscovery(job))) { discovering.delete(key); return; }   // another pane's run; its answer arrives through the file
-    const facts = await discoveryFacts(dir);
-    if (job.cancelled) return finishDiscovery(job, { cancelled: true });
+    const mine = await claimDiscovery(job);
+    if (mine === false) { discovering.delete(key); return; }   // another pane's run; its answer arrives through the file
+    if (mine === null) {                                        // never claimed, so nothing to save: said here, or dropped on a cancel
+      job.error = job.cancelled ? '' : 'замок сканування зайнятий';
+      job.done = true;
+      if (!job.error) discovering.delete(key);
+      return;
+    }
+    const facts = await discoveryFacts(dir, job);
     const cmd = claudeCommand();
+    // runBounded starts nothing once the job is cancelled or out of time, and gives the run only what is left.
     const res = cmd
       ? await runBounded(cmd, discoveryArgs(), { cwd: dir, env: workerEnv(), input: discoveryPrompt(facts), ms: DISCOVERY_MS, bytes: DISCOVERY_BYTES, job })
       : { error: 'ENOENT' };
-    return finishDiscovery(job, job.cancelled ? { cancelled: true } : readDiscovery(res, facts));
+    return finishDiscovery(job, job.cancelled ? { cancelled: true } : readDiscovery(res, facts, dir));
   })().catch((e) => finishDiscovery(job, { error: 'пошук упав (' + clean(String(e.message), 60) + ')' })).finally(() => draw());
 }
 
@@ -1384,7 +1458,7 @@ function projectServices(dir) {
     search: {
       running: here ? 'here' : elsewhere ? 'elsewhere' : '', since: here ? job.since : elsewhere ? found.running.since : 0,
       error: (job && job.error) || (found && found.error) || '', cancelled: !!(found && found.cancelled && !here),
-      at: found ? found.at : 0, count: found ? found.found.length : 0, unresolved: found ? found.unresolved : [],
+      at: found ? found.at : 0, count: found ? found.found.length : 0, unresolved: found ? found.unresolved : [], rejected: found ? found.rejected : 0,
     },
   };
 }
@@ -1425,7 +1499,7 @@ function serviceItems(info) {
   } else {
     if (q.error) items.push({ text: '  ' + sgr('33', 'пошук: ' + q.error) });
     else if (q.cancelled) items.push({ text: dim('  пошук скасовано') });
-    else if (q.at) items.push({ text: dim('  пошук ' + lately(q.at) + ': знайдено ' + q.count + (q.unresolved.length ? ', без посилання ' + q.unresolved.length : '')) });
+    else if (q.at) items.push({ text: dim('  пошук ' + lately(q.at) + ': знайдено ' + q.count + (q.unresolved.length ? ', без посилання ' + q.unresolved.length : '') + (q.rejected ? ', відкинуто ' + q.rejected : '')) });
     items.push({ discover: info.dir, text: '  ' + dim('⌕ ') + 'Знайти й додати сервіси' + dim('  · один запуск Claude') });
   }
   // The docs scan again, with how old the saved one is.

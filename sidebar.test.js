@@ -221,7 +221,7 @@ const servicesSrc = src.match(/\nconst SERVICE_FILE = [\s\S]*?\nfunction service
 // `o.realSlow` swaps in sidebar.js's own slow() — scans then run on their own
 // time, as in the pane — with SCAN_RETRY and SCAN_TRIES cut down by `o.retry`
 // and `o.tries` so a test waits milliseconds. scanCount() counts real doc scans.
-// `o.discoveryMs` and `o.discoveryBytes` cut the search's time and output limits.
+// `o.discoveryMs`, `o.discoveryBytes` and `o.grace` cut the search's budget, output limit and claim margin.
 function servicesModule(home, o = {}) {
   const calls = [];
   let section = servicesSrc;
@@ -230,6 +230,7 @@ function servicesModule(home, o = {}) {
   set('SCAN_TRIES', o.tries);
   set('DISCOVERY_MS', o.discoveryMs);
   set('DISCOVERY_BYTES', o.discoveryBytes);
+  set('DISCOVERY_GRACE', o.grace);
   set('PANE', o.pane);                 // two panes in one test process need two pane ids
   const scheduler = o.realSlow
     ? src.match(/\nconst later = new Map\(\);\n/)[0] + src.match(/\nfunction slow\(key, ttl, run\) \{[\s\S]*?\n\}\n/)[0]
@@ -1117,12 +1118,13 @@ async function orchestration() {
 // ---- «Знайти й додати сервіси»: one run on a click, fenced in and checked ----
 // No model runs here: SIDEBAR_CLAUDE and SIDEBAR_VERCEL point at two small node
 // scripts. The Claude stand-in records how it was started and answers what the
-// scenario file says, as a real run would print it; the Vercel stand-in lists
-// one team and one project.
+// scenario file says, as a real run would print it; the Vercel stand-in records
+// its pid, waits `vdelay` if told to, and lists one team and one project.
 async function discovery() {
   const bin = tmp('sidebar-disc-bin-');
   const scenario = path.join(bin, 'scenario.json');
   const runs = path.join(bin, 'runs.jsonl');
+  const vruns = path.join(bin, 'vercel-runs.txt');
   const fakeClaude = path.join(bin, 'claude.js');
   const fakeVercel = path.join(bin, 'vercel.js');
   fs.writeFileSync(fakeClaude, [
@@ -1140,14 +1142,20 @@ async function discovery() {
     '});',
   ].join('\n'));
   fs.writeFileSync(fakeVercel, [
+    "const fs = require('fs');",
+    'const sc = JSON.parse(fs.readFileSync(process.env.FAKE_SCENARIO, "utf8"));',
+    'fs.appendFileSync(sc.vruns, process.pid + "\\n");',
     'const a = process.argv.slice(2).join(" ");',
-    'if (a.startsWith("teams ls")) console.log(JSON.stringify({ teams: [{ id: "team_1", slug: "acme", name: "Acme", current: true }] }));',
-    'else if (a.startsWith("project ls")) console.log(JSON.stringify({ projects: [{ name: "landing", id: "prj_1", latestProductionUrl: "https://landing.vercel.app" }] }));',
-    'else process.exit(1);',
+    'setTimeout(() => {',
+    '  if (a.startsWith("teams ls")) console.log(JSON.stringify({ teams: [{ id: "team_1", slug: "acme", name: "Acme", current: true }] }));',
+    '  else if (a.startsWith("project ls")) console.log(JSON.stringify({ projects: [{ name: "landing", id: "prj_1", latestProductionUrl: "https://landing.vercel.app" }] }));',
+    '  else process.exitCode = 1;',
+    '}, sc.vdelay || 0);',
   ].join('\n'));
   const answer = (services) => ({ type: 'result', subtype: 'success', is_error: false, structured_output: { services } });
-  const play = (sc) => fs.writeFileSync(scenario, JSON.stringify({ runs, ...sc }));
+  const play = (sc) => fs.writeFileSync(scenario, JSON.stringify({ runs, vruns, ...sc }));
   const ran = () => (fs.existsSync(runs) ? fs.readFileSync(runs, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []);
+  const vran = () => (fs.existsSync(vruns) ? fs.readFileSync(vruns, 'utf8').split('\n').filter(Boolean).map(Number) : []);
   const saved = { SIDEBAR_CLAUDE: process.env.SIDEBAR_CLAUDE, SIDEBAR_VERCEL: process.env.SIDEBAR_VERCEL, FAKE_SCENARIO: process.env.FAKE_SCENARIO,
     CLAUDECODE: process.env.CLAUDECODE, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY, CLAUDE_CODE_SESSION_ID: process.env.CLAUDE_CODE_SESSION_ID };
   Object.assign(process.env, { SIDEBAR_CLAUDE: fakeClaude, SIDEBAR_VERCEL: fakeVercel, FAKE_SCENARIO: scenario,
@@ -1158,20 +1166,24 @@ async function discovery() {
     const other = tmp('sidebar-disc-other-');
     for (const r of [repo, other]) fs.mkdirSync(path.join(r, '.git'));
     put(repo, 'README.md', 'Задачі живуть у Jira, проєкт FUND. Дизайн у Figma.');       // an identifier, no link
+    put(repo, 'docs/seo.md', 'Search Console: властивість example.org');
+    put(repo, '.vercel/project.json', JSON.stringify({ orgId: 'team_1', projectId: 'prj_1', projectName: 'landing-old' }));   // linked before a rename
     const manual = path.join(repo, '.sidebar-services.json');
     fs.writeFileSync(manual, JSON.stringify({ services: [{ label: 'Jira' }, { label: 'Figma' }, { label: 'Hetzner' }, { label: 'Google Search Console' }] }));
     const manualBytes = fs.readFileSync(manual);
     const JIRA = 'https://acme.atlassian.net/jira/software/projects/FUND/boards/3';
     const GSC = 'https://search.google.com/search-console?resource_id=sc-domain%3Aexample.org';
+    const ROVO_PROJECTS = 'mcp__claude_ai_Atlassian_Rovo__getVisibleJiraProjects';
+    const none = { source: 'none', evidence: '' };
     play({ delay: 400, result: answer([
-      { provider: 'jira', status: 'found', url: JIRA, label: 'FUND', evidence: 'getVisibleJiraProjects: FUND on acme' },
-      { provider: 'vercel', status: 'found', url: 'https://vercel.com/acme/landing', evidence: 'vercel CLI: acme/landing' },
-      { provider: 'vercel', status: 'found', url: 'https://vercel.com/acme/guessed', evidence: 'named like the repo' },   // not listed: a guess
-      { provider: 'search-console', status: 'found', url: GSC, evidence: 'docs' },
-      { provider: 'figma', status: 'ambiguous', reason: 'two files called Landing' },
-      { provider: 'hetzner', status: 'no_access', reason: 'no Hetzner tool' },
-      { provider: 'posthog', status: 'found', url: 'javascript:alert(1)' },
-      { provider: 'meta-ads', status: 'found', url: 'https://user:pw@adsmanager.facebook.com/adsmanager/manage/campaigns?act=1' },
+      { provider: 'jira', status: 'found', url: JIRA, label: 'FUND', source: 'account', tool: ROVO_PROJECTS, evidence: 'getVisibleJiraProjects: FUND on acme' },
+      { provider: 'vercel', status: 'found', url: 'https://vercel.com/acme/landing', source: 'vercel_cli', evidence: '.vercel/project.json links landing' },
+      { provider: 'vercel', status: 'found', url: 'https://vercel.com/acme/guessed', source: 'vercel_cli', evidence: 'guessed, named like the repo' },   // not listed
+      { provider: 'search-console', status: 'found', url: GSC, source: 'repo', path: 'docs/seo.md', evidence: 'docs/seo.md names example.org' },
+      { provider: 'figma', status: 'ambiguous', reason: 'two files called Landing', ...none },
+      { provider: 'hetzner', status: 'no_access', reason: 'no Hetzner tool', ...none },
+      { provider: 'posthog', status: 'found', url: 'javascript:alert(1)', source: 'repo', path: 'README.md', evidence: 'alert' },
+      { provider: 'meta-ads', status: 'found', url: 'https://user:pw@adsmanager.facebook.com/adsmanager/manage/campaigns?act=1', source: 'repo', path: 'README.md', evidence: 'act 1' },
     ]) });
 
     // Nothing runs before a click: not a frame, not a second one, not the empty state.
@@ -1216,11 +1228,17 @@ async function discovery() {
     assert.ok(text.some((t) => /^Figma {2}кілька кандидатів — не вибрав/.test(t)), 'the ambiguous Figma was not said: ' + text.join(' | '));
     assert.ok(text.some((t) => /^Hetzner {2}немає доступу/.test(t)), 'Hetzner without access was not said');
     assert.ok(!text.some((t) => /^(Jira|Google Search Console) {2}посилання не задано/.test(t)), 'a placeholder stayed beside the link that fills it');
-    assert.ok(text.some((t) => /^пошук щойно: знайдено 3, без посилання 2/.test(t)), text.join(' | '));
+    assert.ok(text.some((t) => /^пошук щойно: знайдено 3, без посилання 2, відкинуто 3$/.test(t)), text.join(' | '));
+    // Each row says where its proof came from: an account, the Vercel CLI's link of the repo, or a file in it.
+    for (const [start, from] of [['Jira', '· пошук · акаунт'], ['Vercel', '· пошук · Vercel CLI'], ['Google Search Console', '· пошук · docs/seo.md']]) {
+      assert.ok(text.some((t) => t.startsWith(start + '  ') && t.endsWith(from)), start + ' does not say ' + from + ': ' + text.join(' | '));
+    }
     assert.ok(rows.some((i) => i.discover === repo), 'no way to search again');
     assert.ok(fs.readFileSync(manual).equals(manualBytes), 'the manual list was written');
     const reg = JSON.parse(fs.readFileSync(pane.FOUND_FILE, 'utf8')).projects[pane.rootKey(repo)];
-    assert.deepStrictEqual(reg.discovery.found.map((f) => f.id).sort(), ['jira', 'search-console', 'vercel']);
+    assert.deepStrictEqual(reg.discovery.found.map((f) => [f.id, f.source, f.tool || f.path || '']).sort(),
+      [['jira', 'account', ROVO_PROJECTS], ['search-console', 'repo', 'docs/seo.md'], ['vercel', 'vercel_cli', '']]);
+    assert.ok(reg.discovery.found.every((f) => f.evidence), 'a found link was saved without its evidence');
     assert.ok(Array.isArray(reg.found), 'the docs scan went missing beside the search');
     assert.ok(!(pane.rootKey(other) in JSON.parse(fs.readFileSync(pane.FOUND_FILE, 'utf8')).projects) || !JSON.parse(fs.readFileSync(pane.FOUND_FILE, 'utf8')).projects[pane.rootKey(other)].discovery, 'the answer landed in the project the pane moved to');
 
@@ -1229,24 +1247,136 @@ async function discovery() {
     assert.ok(later.serviceItems({ dir: repo }).items.some((i) => i.open === JIRA), 'the answer did not survive a restart');
     assert.strictEqual(ran().length, 1);
 
+    // A found link without its proof is thrown away, and never takes the last good one with it.
+    const savedDisc = () => JSON.parse(fs.readFileSync(pane.FOUND_FILE, 'utf8')).projects[pane.rootKey(repo)].discovery;
+    const search = async (m, what) => {
+      const before = ran().length;
+      m.discoverServices(repo);
+      await eventually(() => !m.projectServices(repo).search.running && ran().length === before + 1, what, 5000);
+    };
+    const firstFound = savedDisc().found;
+    play({ result: answer([
+      { provider: 'jira', status: 'found', url: JIRA, source: 'account', tool: ROVO_PROJECTS, evidence: '' },                     // blank
+      { provider: 'vercel', status: 'found', url: 'https://vercel.com/acme/landing', source: 'vercel_cli' },                     // none at all
+      { provider: 'search-console', status: 'found', url: GSC, source: 'repo', path: 'docs/nope.md', evidence: 'docs/nope.md: example.org' },   // no such file
+      { provider: 'posthog', status: 'found', url: 'https://eu.posthog.com/project/4242', source: 'repo', path: 'README.md', evidence: 'README.md: 4242' },   // the file does not say it
+      { provider: 'posthog', status: 'found', url: 'https://eu.posthog.com/project/4243', source: 'repo', path: '../elsewhere.md', evidence: 'elsewhere: 4243' },   // outside the repo
+      { provider: 'figma', status: 'found', url: FIG, source: 'account', tool: 'mcp__figma__use_figma', evidence: 'use_figma: AbCdEfGhIjKlMnOpQrSt12' },   // not a read tool
+      { provider: 'figma', status: 'found', url: FIG, source: 'account', tool: 'mcp__figma__get_metadata', evidence: 'the design file' },   // does not name the file
+      { provider: 'meta-ads', status: 'found', url: 'https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=987654321', source: 'account', tool: 'mcp__figma__whoami', evidence: 'act 987654321' },   // another provider's tool
+      { provider: 'hetzner', status: 'found', url: 'https://console.hetzner.cloud/projects/1234567/servers', source: 'none', evidence: 'project 1234567' },
+      { provider: 'jira', status: 'found', url: JIRA, source: 'account', tool: ROVO_PROJECTS, evidence: 'FUND, token=abc123' },   // secret-looking
+      { provider: 'vercel', status: 'found', url: 'https://vercel.com/acme/landing', source: 'vercel_cli', evidence: '            ' },   // blank once cleaned
+    ]) });
+    await search(pane, 'a search that proved nothing finished');
+    let shown = pane.serviceItems({ dir: repo }).items;
+    assert.ok(shown.some((i) => /пошук: відповідь не пройшла перевірку \(відкинуто 11\)/.test(i.text)), shown.map((i) => i.text).join(' | '));
+    assert.deepStrictEqual(savedDisc().found, firstFound, 'an answer with nothing proven replaced the last good one');
+    assert.deepStrictEqual(shown.filter((i) => i.open).map((i) => i.open).sort(), [GSC, JIRA, 'https://vercel.com/acme/landing'].sort());
+    play({ result: answer([
+      { provider: 'jira', status: 'found', url: JIRA, source: 'account', tool: ROVO_PROJECTS, evidence: ' ' },   // refused: the last Jira stays
+      { provider: 'vercel', status: 'not_found', ...none },                                                        // said, so the last Vercel goes
+      { provider: 'figma', status: 'found', url: FIG, source: 'account', tool: 'mcp__figma__get_metadata', evidence: 'get_metadata: file AbCdEfGhIjKlMnOpQrSt12' },
+    ]) });
+    await search(pane, 'a search with one refused link finished');
+    const mixed = savedDisc();
+    assert.deepStrictEqual([mixed.found.map((f) => f.id).sort(), mixed.rejected], [['figma', 'jira'], 1]);
+    assert.deepStrictEqual(mixed.found.find((f) => f.id === 'jira'), firstFound.find((f) => f.id === 'jira'), 'the refused Jira link replaced the proven one');
+    shown = pane.serviceItems({ dir: repo }).items.map((i) => i.text.trim());
+    assert.ok(shown.some((t) => /^пошук щойно: знайдено 2, без посилання 1, відкинуто 1$/.test(t)), shown.join(' | '));
+
+    // A search saved before sources were recorded still shows its links.
+    const oldHome = tmp('sidebar-disc-old-');
+    const oldPane = servicesModule(oldHome, { realSlow: true, retry: 40 });
+    fs.mkdirSync(path.dirname(oldPane.FOUND_FILE), { recursive: true });
+    fs.writeFileSync(oldPane.FOUND_FILE, JSON.stringify({ projects: { [oldPane.rootKey(repo)]: { at: Date.now(), found: [],
+      discovery: { at: Date.now(), found: [{ id: 'jira', name: 'Jira', url: JIRA, note: 'FUND', from: 'пошук', evidence: 'getVisibleJiraProjects: FUND' }], unresolved: [], rejected: 0 } } } }));
+    const oldRow = oldPane.serviceItems({ dir: repo }).items.find((i) => i.open === JIRA);
+    assert.ok(oldRow && oldRow.text.trim().endsWith('· пошук'), 'a search saved before sources were recorded no longer shows');
+    fs.rmSync(oldHome, { recursive: true, force: true });
+
     // Cancel: the run's process is gone, the last answer stays.
     play({ delay: 30000, result: answer([]) });
+    const beforeCancel = ran().length;
     pane.discoverServices(repo);
-    await eventually(() => ran().length === 2, 'the second run started');
+    await eventually(() => ran().length === beforeCancel + 1, 'the run to cancel started');
     pane.cancelDiscovery(repo);
     await eventually(() => !pane.projectServices(repo).search.running, 'the cancelled run stopped');
-    assert.throws(() => process.kill(ran()[1].pid, 0), 'the cancelled run is still alive');
+    assert.throws(() => process.kill(ran()[beforeCancel].pid, 0), 'the cancelled run is still alive');
     const cancelled = pane.serviceItems({ dir: repo }).items;
     assert.ok(cancelled.some((i) => /пошук скасовано/.test(i.text)) && cancelled.some((i) => i.open === JIRA), 'a cancel lost the last answer or did not say so');
 
+    // Cancel while the Vercel CLI is still answering: its process dies at once, and nothing starts after it.
+    play({ vdelay: 30000, result: answer([]) });
+    const [c0, v0] = [ran().length, vran().length];
+    pane.discoverServices(repo);
+    await eventually(() => vran().length === v0 + 1, 'the Vercel CLI was asked');
+    const cancelAt = Date.now();
+    pane.cancelDiscovery(repo);
+    await eventually(() => !pane.projectServices(repo).search.running, 'a cancel in the facts phase stopped the search');
+    assert.ok(Date.now() - cancelAt < 2000, 'a cancel waited for the Vercel CLI: ' + (Date.now() - cancelAt) + ' ms');
+    assert.throws(() => process.kill(vran()[v0], 0), 'the Vercel CLI outlived the cancel');
+    await nap(300);
+    assert.deepStrictEqual([ran().length, vran().length], [c0, v0 + 1], 'something started after the cancel');
+    assert.ok(pane.serviceItems({ dir: repo }).items.some((i) => /пошук скасовано/.test(i.text)), 'the facts-phase cancel was not said');
+
+    // Cancel while another pane holds the lock: the wait ends there, not after its ten seconds.
+    fs.writeFileSync(pane.FOUND_LOCK, 'another pane');
+    pane.discoverServices(repo);
+    await nap(300);
+    pane.cancelDiscovery(repo);
+    await eventually(() => !pane.projectServices(repo).search.running, 'a cancel ended the wait for the lock', 1500);
+    fs.unlinkSync(pane.FOUND_LOCK);
+    assert.deepStrictEqual([ran().length, vran().length], [c0, v0 + 1], 'a search waiting for the lock started something');
+
+    // One budget from the click. A slow Vercel CLI eats into Claude's time rather than adding to it, so the
+    // search ends inside its claim, and a second pane clicking all the while never starts one beside it.
+    const slowA = servicesModule(home, { realSlow: true, retry: 40, pane: process.ppid, discoveryMs: 1500, grace: 1500 });
+    const slowB = servicesModule(home, { realSlow: true, retry: 40, discoveryMs: 1500, grace: 1500 });
+    play({ vdelay: 1000, delay: 30000, result: answer([]) });
+    const [c1, v1] = [ran().length, vran().length];
+    const clickAt = Date.now();
+    slowA.discoverServices(repo);
+    await nap(20);
+    while (slowA.projectServices(repo).search.running === 'here' && Date.now() - clickAt < 8000) {
+      slowB.discoverServices(repo);
+      await nap(100);
+    }
+    const took = Date.now() - clickAt;
+    assert.ok(took < 2800, 'the search outlived its budget: ' + took + ' ms');
+    assert.deepStrictEqual([ran().length - c1, vran().length - v1], [0, 2], 'Claude started with no time left, or the second pane started a search of its own');
+    assert.ok(slowA.serviceItems({ dir: repo }).items.some((i) => /пошук: час вийшов/.test(i.text)), 'the whole-search timeout was not said');
+    assert.ok(slowA.serviceItems({ dir: repo }).items.some((i) => i.open === JIRA), 'the timeout lost the last answer');
+
+    // A search whose claim was taken over writes nothing when it ends: the other search's claim and answer stay.
+    play({ delay: 600, result: answer([{ provider: 'figma', status: 'found', url: FIG, source: 'account', tool: 'mcp__figma__get_metadata', evidence: 'get_metadata: AbCdEfGhIjKlMnOpQrSt12' }]) });
+    const c2 = ran().length;
+    pane.discoverServices(repo);
+    await eventually(() => ran().length === c2 + 1, 'the run to be overtaken started');
+    const regNow = JSON.parse(fs.readFileSync(pane.FOUND_FILE, 'utf8'));
+    const taken = { pane: process.pid, since: Date.now() };
+    const kept = regNow.projects[pane.rootKey(repo)].discovery;
+    regNow.projects[pane.rootKey(repo)].discovery = { ...kept, running: taken };
+    fs.writeFileSync(pane.FOUND_FILE, JSON.stringify(regNow));
+    await eventually(() => (pane.discovering.get(pane.rootKey(repo)) || { done: true }).done, 'the overtaken run ended', 5000);
+    const afterTake = savedDisc();
+    assert.deepStrictEqual(afterTake.running, taken, 'a late search cleared the claim of the one that took over');
+    assert.deepStrictEqual([afterTake.found, afterTake.at], [kept.found, kept.at], 'a late search overwrote the answer');
+    delete afterTake.running;                                        // the other search is over
+    const regBack = JSON.parse(fs.readFileSync(pane.FOUND_FILE, 'utf8'));
+    regBack.projects[pane.rootKey(repo)].discovery = afterTake;
+    fs.writeFileSync(pane.FOUND_FILE, JSON.stringify(regBack));
+
     // Time, size, a broken answer, a missing login, a missing binary: each said, the last answer kept, no retry.
-    const quick = servicesModule(home, { realSlow: true, retry: 40, discoveryMs: 400, discoveryBytes: 2000 });
+    const quick = servicesModule(home, { realSlow: true, retry: 40, discoveryMs: 2500, discoveryBytes: 2000 });
     const cases = [
       [{ delay: 30000, result: answer([]) }, /час вийшов/],
       [{ big: 50000 }, /відповідь більша за/],
       [{ raw: 'not json at all' }, /відповідь не читається/],
       [{ result: { type: 'result', subtype: 'success', is_error: true, result: 'Invalid API key · Please run /login' }, code: 1 }, /не залогінений/],
       [{ result: answer('nope') }, /нема списку сервісів/],
+      [{ result: { type: 'result', subtype: 'success', is_error: false, structured_output: 'services', result: 'no JSON here' } }, /нема списку сервісів/],
+      [{ result: answer([null, 5, 'jira', { provider: 'jira' }, { provider: 'Jira', status: 'found', url: JIRA }, { provider: 'nope', status: 'found' }]) }, /не пройшла перевірку \(відкинуто 6\)/],
     ];
     for (const [sc, said] of cases) {
       play(sc);
@@ -1269,6 +1399,7 @@ async function discovery() {
     fs.mkdirSync(path.join(shownHome, '.claude', 'projects', 'p'), { recursive: true });
     const onScreen = path.join(os.tmpdir(), 'sidebar-disc-screen.jsonl');
     transcript(onScreen, repo);
+    const beforeRender = [ran().length, vran().length];
     const v = spawnSync(process.execPath, [SIDEBAR, onScreen], {
       env: { ...process.env, HOME: shownHome, USERPROFILE: shownHome, SIDEBAR_ONCE: '1', SIDEBAR_HITS: '1', COLUMNS: '90', LINES: '50' }, encoding: 'utf8',
     });
@@ -1279,7 +1410,7 @@ async function discovery() {
     assert.ok(jiraRow && lines[+jiraRow[0]].includes('acme.atlassian.n') && map.blocks[jiraRow[0]] === 'СЕРВІСИ', 'the found Jira board is not a row that opens it');
     const searchRow = Object.entries(map.hits).find(([, h]) => h.discover);
     assert.ok(searchRow && fs.realpathSync(searchRow[1].discover) === fs.realpathSync(repo) && lines[+searchRow[0]].includes('Знайти й додати сервіси'), 'the search row is not in the click map');
-    assert.strictEqual(ran().length, 7, 'a render started a run');
+    assert.deepStrictEqual([ran().length, vran().length], beforeRender, 'a render started a run or asked the Vercel CLI');
     for (const d of [bin, home, repo, other]) fs.rmSync(d, { recursive: true, force: true });
     fs.rmSync(onScreen, { force: true });
   } finally {
