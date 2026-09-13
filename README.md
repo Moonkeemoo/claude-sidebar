@@ -1,8 +1,8 @@
 # claude-sidebar
 
 A companion pane for [Claude Code](https://claude.com/claude-code). Run it in a split terminal next
-to your session and it shows, live, what that session is doing — the files it has touched, the links it
-produced, the images you pasted in, and what the machine is spending itself on meanwhile. Press `Tab` and it becomes
+to your session and it shows, live, what that session is doing — the links it produced, the images you
+pasted in, the dashboards its project lives in, and what the machine is spending itself on meanwhile. Press `Tab` and it becomes
 a list of every Claude session on the machine; pick one and it opens in a new terminal tab, resumed.
 
 It latches onto the session in its own tab and stays there, so a pane open beside reef keeps showing
@@ -14,7 +14,7 @@ Node only, no dependencies, one file. It reads transcripts and never writes to t
 
 **The live view** is what you get on start. It opens with what the machine is doing, because that is
 the one block worth a glance without reading anything, then every session that has moved in the last
-three hours, then the plan, media, files and links of the session it is following:
+three hours, then the plan, media, project services and links of the session it is following:
 
 ```
 ── ЗАЛІЗО колонки ───────────────────────────────────
@@ -55,11 +55,12 @@ three hours, then the plan, media, files and links of the session it is followin
 
   1.png  121K  image-cache/9de93e09…/1.png
 
-── ФАЙЛИ 6 1–2 ──────────────────────────────────────
-  з написаного — тільки те, що відкривають і читають
+── СЕРВІСИ 3 ────────────────────────────────────────
+  дашборди цього проєкту — клік відкриває
 
-  20:27 docs/plan.md
-  20:17 showcase/dashboard.html
+  Figma  www.figma.com/design/AbCdEfGhIjKlMnOp…  лендінг
+  PostHog  eu.posthog.com/project/12345  project 12345
+  Jira  посилання не задано
 
 ── ЛІНКИ 17 ─────────────────────────────────────────
   адреси, які сесія назвала — клік відкриває
@@ -74,7 +75,7 @@ Every block carries one dim line saying what it is and why it is on the screen, 
 scrolling a block never takes away what the block is — and it appears only where it costs nothing.
 The moment a block would have to hide a row of its own to make space, the explanation goes instead:
 two rows of the thing beat two rows about the thing. That is why the load chart on a short pane has
-no caption and the file list still does.
+no caption and the link list still does.
 
 The mark in front of a session is the useful part of the СЕСІЇ block:
 
@@ -91,15 +92,57 @@ several running in parallel that is the state easiest to lose track of. The sess
 holding carries a `▸` and its name in cyan — worth a glance, because the pane deliberately stays on
 it while other rows move.
 
-`── ФАЙЛИ 6 1–2 ──` means the block holds six rows and is showing the first two of them — scroll it
-to see the rest. `ФАЙЛИ 6+` with a plus is a different thing: the count comes from the newest slice
-of a long transcript rather than the whole of it. Greyed-out file rows are temp paths. The МЕДІА and
-ЛІНКИ rows are clickable — see [Mouse](#mouse).
+`── СЕСІЇ 5 1–3 ──` means the block holds five rows and is showing the first three of them — scroll it
+to see the rest. The МЕДІА, СЕРВІСИ and ЛІНКИ rows are clickable — see [Mouse](#mouse).
 
-ФАЙЛИ holds only what a person opens and looks at: notes, pages, screenshots, PDFs. A session touches
-far more than that, and a list of sources, configs and probe scripts, each carrying the number of
-times it was written to, records the work instead of offering anything to click. One file arriving
-under two names — absolute from an `Edit`, relative from a shell line — is one row.
+СЕРВІСИ is where the project lives besides its code: its Figma file, its Jira board, its PostHog
+project, its Hetzner console, its Vercel project. A row opens that dashboard. It shows the start of
+the address first, like every clickable row here, then a short name for the project inside the
+service. Everything in it comes from this disk: the pane asks no network whether a service is up or
+whether you are signed in, so a row says only that the project uses the service.
+
+What someone wrote down comes first. A repo can carry `.sidebar-services.json` at its root:
+
+```json
+{
+  "services": [
+    { "label": "Figma", "url": "https://www.figma.com/design/AbCdEfGhIjKlMnOpQrSt12/Landing", "note": "лендінг" },
+    { "label": "Jira" }
+  ]
+}
+```
+
+An entry without `url` shows as `посилання не задано` and opens nothing: a service the project uses
+whose link nobody has yet. For a repo that should not carry such a file, the same list goes into
+`~/.claude/sidebar-services.json` under the repo's absolute path, and it is listed before the repo's
+own:
+
+```json
+{
+  "projects": {
+    "C:/Users/me/code/landing": { "services": [{ "label": "PostHog", "url": "https://eu.posthog.com/project/12345" }] }
+  }
+}
+```
+
+Only `http`/`https` links are shown, and never one with a password or a token in it. A file over 64 KB,
+one that is not JSON, and entries that break those rules become a yellow row in the block saying so;
+the pane itself goes on drawing. A saved edit to either file shows on the next frame.
+
+Then comes what the project's docs link to: README, CLAUDE.md and the `docs/` tree, two levels down at
+most, 80 files and the first 256 KB of each. Fenced examples are skipped. Nothing is read from
+`node_modules`, a dot-folder, a symlink, a lockfile, or a file named like a secret. A link counts only
+when it names a project inside a service the pane knows: a Vercel project (not Vercel's docs), a Figma
+file, a board or issue on an `atlassian.net` tenant, a Hetzner Cloud project, a PostHog Cloud project,
+a Search Console property, a Meta ad account. A README that merely says "Figma" adds nothing. Several
+links into one project are one row, with the doc that named it at the end, and a written entry with
+no link gives way to a found one for the same service. `"detect": false` in either list turns the
+docs off for that repo. A link the session printed stays in ЛІНКИ: a session saying something once
+is not the project using it.
+
+The files a session wrote used to have this block. They are still read — that is how a session
+started in a folder above a repo is placed in it — but a list of them recorded the work rather than
+offering anything worth a click.
 
 ЗАЛІЗО is the machine rather than the session: one sample a second, the newest at the right edge and
 the history reaching back as far as the pane is wide. Every series gets a band of its own, so a
@@ -384,8 +427,8 @@ all. Windows only.
  ◑ сьогодні 20:27  Пошук інструменту для гуманізації
  ○ вчора    18:02  Mono card API balance tracking
 
-── ФАЙЛИ 6 1–2 ──────────────────────────────────────
-  21:45 claude-sidebar/README.md
+── СЕРВІСИ 2 ────────────────────────────────────────
+  Figma  www.figma.com/design/AbCdEfGhIjKlMnOp…  лендінг
   …
  ↑↓ вибір · Enter/клік — панель · O — нова вкладка · Tab назад
 ```
@@ -396,7 +439,7 @@ The pane's own labels are Ukrainian.
 
 The whole pane always fits: it paints exactly as many rows as the window has and never wraps a line.
 Blocks are handed the room they ask for while there is enough, and share what is left evenly when
-there is not — so two images never cost a long file list a quarter of the pane. Anything that does
+there is not — so two images never cost a long link list a quarter of the pane. Anything that does
 not fit scrolls inside its own block instead of pushing the footer off the bottom.
 
 Every block but the first carries a blank row above its rule, which is a row it takes from the same budget: a short window spends its space on separation before it spends it on content, and the blocks start scrolling sooner than they used to.
@@ -543,7 +586,7 @@ and keeps it pinned until you pick another. The header of the СЕСІЇ block a
 line open the session list. In the list, `Enter` also switches this pane; `O` opens a resumed
 session in a new tab or split.
 
-**The wheel scrolls whatever the pointer is over, and only that.** Put it on ФАЙЛИ and the file list
+**The wheel scrolls whatever the pointer is over, and only that.** Put it on СЕРВІСИ and that list
 moves while the session list above stays where it was; move to ЛІНКИ and that one moves instead. Each
 block keeps its own position, so a block you scrolled stays scrolled while the pane keeps updating
 around it.

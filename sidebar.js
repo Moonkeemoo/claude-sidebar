@@ -218,7 +218,6 @@ function readSlice(file, from, len) {
 }
 
 // ---- transcript parsing ----
-const TEMP = /[\\/](Temp|tmp)[\\/]/i;
 const NOISE = /^(\/dev\/null|&\d|-|\d)$/;
 // characters no real path holds, but python f-strings and shell arithmetic do,
 // and the redirect regex below happily matches those too
@@ -701,6 +700,239 @@ function projectOf(s, st) {
     if (m && !PREVIEW.test(m[1])) hosts.add(m[1].toLowerCase());
   }
   return { dir, name: info.name, repo: info.repo, git: info.git, urls: [...hosts].sort() };
+}
+
+// ---- project services ----
+// The dashboards a project lives in beside its code: the Figma file, the Jira
+// board, the PostHog project. Two sources, both on this disk: what someone wrote
+// down, and what the project's own docs link to. Nothing here asks a network
+// whether a service is up or an account signed in, so a row says only that the
+// project uses the service, never that it is healthy.
+//
+// Written down wins. `.sidebar-services.json` at the repo root travels with the
+// repo; `~/.claude/sidebar-services.json`, keyed by the repo's absolute path, is
+// the owner's own list for repos that should not carry one, and comes first.
+// Both are two small files a stat can check, so they are read on the render
+// path and a saved edit shows on the next frame. The docs are a walk, and go
+// through slow().
+const SERVICE_FILE = '.sidebar-services.json';
+const PERSONAL_SERVICES = path.join(HOME, '.claude', 'sidebar-services.json');
+const SERVICE_CAP = 20;               // rows per project, every source together
+const SERVICE_BYTES = 64 * 1024;      // a config bigger than this is a mistake, not a list
+const SERVICE_TTL = 30 * 1000;        // how old the docs scan may get
+const SERVICE_DOCS = 80;              // files read per scan
+const SERVICE_DOC_BYTES = 256 * 1024; // bytes read of any one of them
+
+// http(s) only, no user:password@, nothing in the query that reads like a
+// credential: a row is a link a person may be shown, not a key.
+const SECRET_PARAM = /^(access_?token|token|api_?key|key|secret|password|passwd|sig|signature|auth|code)$/i;
+function safeUrl(s) {
+  if (typeof s !== 'string' || s.length > 500) return null;
+  let u; try { u = new URL(s.trim()); } catch { return null; }
+  if (!/^https?:$/.test(u.protocol) || u.username || u.password) return null;
+  for (const k of u.searchParams.keys()) if (SECRET_PARAM.test(k)) return null;
+  return u;
+}
+
+const unslug = (s) => { try { return decodeURIComponent(s).replace(/-/g, ' '); } catch { return s; } };
+
+// A provider knows its own dashboards and nothing near them: a Figma file, not
+// figma.com; a board on a Jira tenant, not atlassian.com; a Vercel project, not
+// its docs. `key` makes two links one row — the project, not the page inside
+// it — and `url` is where the row goes: the project's own root where the
+// service has one, the link itself where the file or board is the point, and
+// the query kept wherever it names the property or the account.
+const VERCEL_PAGES = /^(docs|blog|new|login|signup|pricing|templates|guides|changelog|dashboard|account|integrations|marketplace|solutions|contact|legal|security|enterprise|customers|home|teams|support|help|kb|design|ai|about|careers|partners|events|oss|frameworks|resources|storage|products|platform)$/;
+const PROVIDERS = [
+  { id: 'vercel', name: 'Vercel', match(u) {
+    const [team, project] = u.pathname.split('/').filter(Boolean);
+    if (u.hostname !== 'vercel.com' || !team || !project || VERCEL_PAGES.test(team)) return null;
+    return { key: team + '/' + project, url: 'https://vercel.com/' + team + '/' + project, note: team + '/' + project };
+  } },
+  { id: 'figma', name: 'Figma', match(u) {
+    const m = /^\/(file|design|board|proto|slides|deck)\/([A-Za-z0-9]{16,})(?:\/([^/]+))?/.exec(u.pathname);
+    if (!/^(www\.)?figma\.com$/.test(u.hostname) || !m) return null;
+    return { key: m[2], url: u.href, note: m[3] ? unslug(m[3]) : m[1] };
+  } },
+  { id: 'jira', name: 'Jira', match(u) {
+    const tenant = /^([a-z0-9][a-z0-9-]*)\.atlassian\.net$/.exec(u.hostname);
+    const m = /^\/(?:jira\/(?:software|core|servicedesk)\/(?:c\/)?projects\/([A-Z][A-Z0-9_]+)|browse\/([A-Z][A-Z0-9_]+)-\d+|projects\/([A-Z][A-Z0-9_]+))/.exec(u.pathname);
+    const key = m && (m[1] || m[2] || m[3]);
+    return tenant && key ? { key: tenant[1] + '/' + key, url: u.href, note: key + ' · ' + tenant[1] } : null;
+  } },
+  { id: 'hetzner', name: 'Hetzner', match(u) {
+    const m = /^\/projects\/(\d+)/.exec(u.pathname);
+    return u.hostname === 'console.hetzner.cloud' && m ? { key: m[1], url: 'https://console.hetzner.cloud/projects/' + m[1], note: 'project ' + m[1] } : null;
+  } },
+  { id: 'posthog', name: 'PostHog', match(u) {
+    const m = /^\/project\/(\d+)/.exec(u.pathname);
+    return /^(us|eu|app)\.posthog\.com$/.test(u.hostname) && m ? { key: u.hostname + '/' + m[1], url: 'https://' + u.hostname + '/project/' + m[1], note: 'project ' + m[1] } : null;
+  } },
+  { id: 'search-console', name: 'Google Search Console', match(u) {
+    const id = u.searchParams.get('resource_id');
+    if (u.hostname !== 'search.google.com' || !/^\/search-console(\/|$)/.test(u.pathname) || !id) return null;
+    return { key: id, url: 'https://search.google.com/search-console?resource_id=' + encodeURIComponent(id), note: id.replace(/^sc-domain:/, '') };
+  } },
+  { id: 'meta-ads', name: 'Meta Ads', match(u) {
+    const act = u.searchParams.get('act');
+    if (!/^(adsmanager|business|www)\.facebook\.com$/.test(u.hostname) || !/^\/adsmanager(\/|$)/.test(u.pathname) || !/^\d+$/.test(act || '')) return null;
+    return { key: act, url: u.origin + u.pathname + '?act=' + act, note: 'act ' + act };
+  } },
+];
+
+function matchService(u) {
+  for (const p of PROVIDERS) {
+    const m = p.match(u);
+    if (m) return { id: p.id, name: p.name, ...m };
+  }
+  return null;
+}
+
+// Two spellings of one link are one row: case-blind host, no trailing slash.
+const canonUrl = (u) => u.protocol + '//' + u.host.toLowerCase() + u.pathname.replace(/\/+$/, '') + u.search;
+// Windows paths compare case-blind and with either slash; a trailing one means nothing.
+const rootKey = (p) => { const r = path.resolve(p).replace(/[\\/]+$/, ''); return process.platform === 'win32' ? r.toLowerCase() : r; };
+
+// A file read only when its stat changed. Absent is no list and no error.
+const serviceFiles = new Map();
+function readServiceFile(file) {
+  let st; try { st = fs.statSync(file); } catch { return null; }
+  const hit = serviceFiles.get(file);
+  if (hit && hit.mtime === st.mtimeMs && hit.size === st.size) return hit.value;
+  let value;
+  if (!st.isFile() || st.size > SERVICE_BYTES) value = { error: 'не файл або більший за ' + SERVICE_BYTES / 1024 + ' КБ' };
+  else {
+    try {
+      let text = fs.readFileSync(file, 'utf8');
+      if (text.charCodeAt(0) === 0xfeff) text = text.slice(1); // Notepad's byte-order mark
+      value = { json: JSON.parse(text) };
+    } catch { value = { error: 'не читається як JSON' }; }
+  }
+  serviceFiles.set(file, { mtime: st.mtimeMs, size: st.size, value });
+  return value;
+}
+
+// { services: [{ label, url?, note?, id? }], detect?: false }. A bad entry is
+// dropped and counted, a bad file is one row saying so; neither stops a frame.
+function serviceList(raw, where) {
+  if (!raw || typeof raw !== 'object' || !Array.isArray(raw.services)) return { items: [], errors: [where + ': немає масиву services'] };
+  const items = [];
+  let bad = Math.max(0, raw.services.length - SERVICE_CAP);
+  for (const e of raw.services.slice(0, SERVICE_CAP)) {
+    const label = e && typeof e.label === 'string' ? e.label.trim().slice(0, 40) : '';
+    const given = e && e.url != null && e.url !== '';
+    const u = given ? safeUrl(e.url) : null;
+    if (!label || (given && !u)) { bad++; continue; }
+    items.push({
+      id: typeof e.id === 'string' ? e.id.trim().toLowerCase().slice(0, 40) : '',
+      label, url: u ? u.href : null, note: typeof e.note === 'string' ? e.note.trim().slice(0, 60) : '',
+    });
+  }
+  return { items, errors: bad ? [where + ': пропущено записів — ' + bad] : [], noDetect: raw.detect === false };
+}
+
+// The owner's list for this repo, found by its path however that was spelt.
+function personalServices(dir) {
+  const v = readServiceFile(PERSONAL_SERVICES);
+  if (!v) return null;
+  const where = '~/.claude/sidebar-services.json';
+  if (v.error) return { items: [], errors: [where + ' ' + v.error] };
+  const projects = v.json && typeof v.json.projects === 'object' ? v.json.projects : null;
+  if (!projects) return { items: [], errors: [where + ': немає об’єкта projects'] };
+  const want = rootKey(dir);
+  const found = Object.keys(projects).find((k) => rootKey(k) === want);
+  return found ? serviceList(projects[found], where) : null;
+}
+
+// The docs only — README, CLAUDE.md, docs/… — two levels down at most, markdown
+// and the plain config formats. Never an .env or a credentials file, never a
+// transcript: a link a session printed once is ЛІНКИ's, not the project's.
+// Fenced blocks are examples, as vercelInDocs learnt; symlinks may lead off the
+// repo, so they are not followed.
+const SERVICE_EXT = /\.(md|mdx|txt|json|ya?ml|toml)$/i;
+const SERVICE_NEVER = /^\.env|credential|secret|token|lock\.(json|ya?ml)$|-lock\.json$|^yarn\.lock$/i;
+const SERVICE_SKIP = new Set(['node_modules', 'vendor', 'dist', 'build', 'out', 'coverage']);
+const LINK_RE = /https?:\/\/[^\s<>()"'`\]]+/g;
+function servicesInDocs(dir) {
+  const found = [];
+  let files = SERVICE_DOCS;
+  const walk = (d, depth) => {
+    let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (files <= 0) return;
+      if (e.isSymbolicLink() || e.name[0] === '.') continue;
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { if (depth > 0 && !SERVICE_SKIP.has(e.name)) walk(p, depth - 1); continue; }
+      if (!e.isFile() || !SERVICE_EXT.test(e.name) || SERVICE_NEVER.test(e.name)) continue;
+      files--;
+      let text; try { text = readSlice(p, 0, SERVICE_DOC_BYTES); } catch { continue; }
+      for (const m of text.replace(FENCE, '').matchAll(LINK_RE)) {
+        const u = safeUrl(m[0].replace(/[.,;:!?*_]+$/, ''));
+        const hit = u && matchService(u);
+        if (hit) found.push({ ...hit, from: path.relative(dir, p).split(path.sep).join('/') });
+      }
+    }
+  };
+  walk(dir, 2);
+  return found;
+}
+
+// Written down first, in the order written, the owner's before the repo's; then
+// what the docs link to that nobody wrote down. Two rows for one dashboard
+// become the first of them, and a written row with no link gives way to a real
+// link for the same service, wherever that came from.
+function mergeServices(lists, found) {
+  const rows = [];
+  const seen = new Set();
+  const name = (r) => (r.id || r.label).toLowerCase();
+  const detected = found.map((f) => ({ id: f.id, label: f.name, url: f.url, note: f.note, from: f.from }));
+  for (const r of [...lists.flatMap((l) => l.items), ...detected]) {
+    const u = r.url && safeUrl(r.url);
+    const m = u && matchService(u);
+    const key = m ? m.id + ':' + m.key : u ? canonUrl(u) : 'label:' + name(r);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    rows.push(m && !r.id ? { ...r, id: m.id } : r);
+  }
+  const linked = new Set(rows.filter((r) => r.url).map(name));
+  return rows.filter((r) => r.url || !linked.has(name(r))).slice(0, SERVICE_CAP);
+}
+
+// Everything the block needs for one repo. The key is the repo, so a pane that
+// moves to another project never shows the last one's services.
+function projectServices(dir) {
+  const lists = [personalServices(dir), (() => {
+    const v = readServiceFile(path.join(dir, SERVICE_FILE));
+    return v && (v.error ? { items: [], errors: [SERVICE_FILE + ' ' + v.error] } : serviceList(v.json, SERVICE_FILE));
+  })()].filter(Boolean);
+  const detect = !lists.some((l) => l.noDetect);
+  const found = detect ? slow('services:' + rootKey(dir), SERVICE_TTL, () => servicesInDocs(dir)) : [];
+  return { rows: mergeServices(lists, found || []), errors: lists.flatMap((l) => l.errors), pending: detect && !found };
+}
+
+// A row shows where it goes before it says anything else about it — the start of
+// the address, the way every clickable row in this pane does — then the project
+// inside the service, then the doc that named it, if it was a doc.
+function serviceItems(info) {
+  const s = projectServices(info.dir);
+  const items = s.rows.map((r) => {
+    if (!r.url) return { text: '  ' + r.label + dim('  посилання не задано' + (r.note ? ' · ' + r.note : '')) };
+    const shown = r.url.replace(/^https?:\/\//, '');
+    return {
+      open: r.url,
+      text: '  ' + sgr('1', r.label) + '  ' + sgr('4;34', shown.length > 42 ? shown.slice(0, 41) + '…' : shown)
+        + (r.note ? dim('  ' + r.note) : '') + (r.from ? dim('  · ' + r.from) : ''),
+    };
+  });
+  const count = items.length;
+  for (const e of s.errors) items.push({ text: '  ' + sgr('33', e) });
+  if (!items.length) {
+    items.push(s.pending
+      ? { text: dim('  шукаю в документації проєкту…') }
+      : { text: dim('  нічого не задано й не знайдено в документації') },
+    { text: dim('  додай ' + SERVICE_FILE + ' у корінь репозиторію') });
+  }
+  return { items, count };
 }
 
 // ---- answers that take longer than a frame ----
@@ -1846,35 +2078,11 @@ function pickRow(s, on) {
   return on ? sgr('7', strip(line)) : line;
 }
 
-// The three blocks a session's body is made of, as items rather than lines, so
-// the layout can decide how many of each actually fit. Long values are left
-// whole here — clip() cuts them to the pane's width as they are printed.
-// Of everything a session writes, three kinds are worth a click: notes to read,
-// pages to look at, screenshots to check. Sources, configs, probe scripts and
-// the half-guessed paths that come out of shell commands are the work itself,
-// and the row that says a file was touched forty-seven times says nothing you
-// can act on. The filter is here rather than in `noteFile`, because `repoOf`
-// places a session by every path it touched, most of them source.
-const KEEP = /\.(md|html?|png|jpe?g|gif|webp|svg|pdf)$/i;
-
-// One file reaches the transcript under several names — absolute from an Edit,
-// relative from a shell line — and on a list this short, two rows for one file
-// is half the block. Rows that read the same are the same file; the absolute
-// spelling is the one kept, because it is the one that opens. A row opens its
-// file, and plenty of the paths guessed out of shell commands do not exist —
-// openExternal is what says no.
-function fileRows(st, w, base) {
-  const by = new Map();
-  for (const [p, meta] of [...st.files.entries()].sort((a, b) => (b[1].t > a[1].t ? 1 : -1))) {
-    if (!KEEP.test(p)) continue;
-    const label = shorten(p, w - 12, base);
-    const cur = by.get(strip(label));
-    if (!cur) by.set(strip(label), { p, text: '  ' + dim(hhmm(meta.t)) + ' ' + label });
-    else if (path.isAbsolute(p) && !path.isAbsolute(cur.p)) cur.p = p;
-  }
-  return [...by.values()].map(({ p, text }) => ({ open: p, text: TEMP.test(p) ? dim(strip(text)) : text }));
-}
-
+// The session's own media and links, as items rather than lines, so the layout
+// can decide how many of each actually fit. Long values are left whole here —
+// clip() cuts them to the pane's width as they are printed. The files it wrote
+// have no block any more: they are the work itself, and the project's services
+// took their place (serviceItems).
 function bodyItems(st, base) {
   const w = W();
   return {
@@ -1882,7 +2090,6 @@ function bodyItems(st, base) {
       open: m.full,
       text: '  ' + sgr('36', m.name) + dim('  ' + kb(m.size)) + dim('  ' + shorten(m.full, w - 20, base)),
     })),
-    files: fileRows(st, w, base),
     links: [...st.links.entries()]
       .sort((a, b) => (b[1] > a[1] ? 1 : -1))
       .map(([u]) => ({ open: u, text: '  ' + sgr('4;34', u) })),
@@ -2322,7 +2529,9 @@ function limitRows(st) {
   return rows;
 }
 
-function bodyBlocks(st, base) {
+// `proj` is the project the renderer already resolved for its ПРОЄКТ block, so
+// the services under it belong to the same repo the header names.
+function bodyBlocks(st, base, proj) {
   const b = bodyItems(st, base);
   const out = [];
   const agents = agentRows(st);
@@ -2342,9 +2551,13 @@ function bodyBlocks(st, base) {
   if (b.media.length) {
     out.push({ key: 'МЕДІА', label: 'МЕДІА', items: b.media, note: 'скріншоти й картинки, вставлені в цю сесію' });
   }
+  // The files a session wrote are the work itself, and the list of them was never
+  // what anyone clicked; the dashboards the project lives in are. st.files is
+  // still collected, because repoOf places a session by it.
+  const services = serviceItems(proj);
   out.push({
-    key: 'ФАЙЛИ', label: 'ФАЙЛИ', items: b.files, count: b.files.length + (st.partial ? '+' : ''),
-    note: 'з написаного — тільки те, що відкривають і читають',
+    key: 'СЕРВІСИ', label: 'СЕРВІСИ', items: services.items, count: services.count,
+    note: 'дашборди цього проєкту — клік відкриває',
   });
   out.push({ key: 'ЛІНКИ', label: 'ЛІНКИ', items: b.links, note: 'адреси, які сесія назвала — клік відкриває' });
   return out;
@@ -2391,7 +2604,7 @@ function renderWatch() {
   const strayRows = stray.map((o) => ({
     text: '  ' + sgr('33', o.name) + dim('  ×' + o.n + '  ' + weigh(o.bytes) + '  від ' + hhmm(o.born)),
   }));
-  const body = bodyBlocks(live, live.cwd);
+  const body = bodyBlocks(live, live.cwd, proj);
 
   layout(out, [
     // The machine goes first: it is the one block that is worth a glance without
@@ -2847,7 +3060,7 @@ function renderPick() {
     },
     ...(proj ? [{ key: 'ПРОЄКТ', label: 'ПРОЄКТ', items: projectItems(proj) }] : []),
     ...(proj && proj.urls.length ? [{ key: 'ДЕПЛОЙ', label: 'ДЕПЛОЙ', items: deployItems(proj), count: '' }] : []),
-    ...(st ? bodyBlocks(st, st.cwd) : []),
+    ...(st ? bodyBlocks(st, st.cwd, proj) : []),
   ], avail);
 
   // A refusal is reported where the click happened, and saying the terminal is

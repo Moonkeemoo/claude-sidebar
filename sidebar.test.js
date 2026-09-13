@@ -203,13 +203,218 @@ assert.deepStrictEqual(vercelInDocs(docs), ['live-app.vercel.app'], 'the host in
 assert.ok(!vercelInDocs(__dirname).includes('reef-money.vercel.app'), 'our own README example is being read as our deployment');
 fs.rmSync(docs, { recursive: true, force: true });
 
-// ---- the files block offers what is worth opening ----
-// The fixture session edits a source file and writes a note. Only one of those
-// is something its user ever wants to look at, and the other one is the work.
+// ---- the project's services took the files block's place ----
+// The fixture session edits a source file and writes a note: that is the work,
+// not something anyone clicked, and the block that listed it is gone. The
+// dashboards of the repo the ПРОЄКТ block names sit there now.
 const watch = render('1');
+assert.ok(!watch.lines.some((l) => /^── ФАЙЛИ/.test(strip(l))), 'the files block is back');
+assert.ok(watch.lines.some((l) => /^── СЕРВІСИ/.test(strip(l))), 'no services block in the live view');
 const opens = Object.values(watch.hits).map((h) => h.open).filter((o) => o && !/^https?:/.test(o));
-assert.ok(opens.some((o) => o.endsWith('README.md')), 'the note the session wrote is not in the block');
-assert.ok(!opens.some((o) => /\.js$/.test(o)), 'a source file is still listed: ' + opens.join(' '));
+assert.ok(!opens.some((o) => /\.(js|md)$/.test(o)), 'a file the session wrote is still offered: ' + opens.join(' '));
+
+// ---- services: what someone wrote down, then what the docs link to ----
+// The section is lifted out of sidebar.js whole, with slow() made synchronous
+// so a scan's answer is there on the first call, and the keys it was asked
+// under recorded.
+const servicesSrc = src.match(/\nconst SERVICE_FILE = [\s\S]*?\nfunction serviceItems[\s\S]*?\n\}\n/)[0];
+function servicesModule(home) {
+  const calls = [];
+  const mod = eval('(function(){ const HOME = home; const dim = (s) => s; const sgr = (c, s) => s;'
+    + ' const slow = (key, ttl, run) => { calls.push([key, ttl]); return run(); };'
+    + src.match(/\nconst FENCE = .*\n/)[0] + src.match(/\nfunction readSlice[\s\S]*?\n\}\n/)[0] + servicesSrc
+    + '\nreturn { safeUrl, matchService, serviceList, servicesInDocs, mergeServices, projectServices, serviceItems, rootKey,'
+    + ' PERSONAL_SERVICES, SERVICE_CAP, SERVICE_DOCS, SERVICE_DOC_BYTES, SERVICE_TTL }; })()');
+  return { ...mod, calls };
+}
+const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
+const FIG = 'https://www.figma.com/design/AbCdEfGhIjKlMnOpQrSt12/Deck?node-id=1-2';
+const svc = servicesModule(tmp('sidebar-svc-home-'));
+
+// A provider knows its dashboards and nothing near them.
+const kind = (s) => { const u = svc.safeUrl(s); const m = u && svc.matchService(u); return m ? m.id + ':' + m.key : null; };
+for (const [url, want] of [
+  ['https://vercel.com/acme/landing/deployments', 'vercel:acme/landing'],
+  ['https://vercel.com/docs/cli/env', null],                                   // its docs, not a project
+  [FIG, 'figma:AbCdEfGhIjKlMnOpQrSt12'],
+  ['https://figma.com/design/abc123XYZ/Назва', null],                          // how docs illustrate an id
+  ['https://mcp.figma.com/mcp', null],
+  ['https://acme.atlassian.net/jira/software/projects/FUND/boards/3', 'jira:acme/FUND'],
+  ['https://acme.atlassian.net/browse/FUND-12', 'jira:acme/FUND'],
+  ['https://acme.atlassian.net/wiki/spaces/X', null],                         // Confluence, not Jira
+  ['https://console.hetzner.cloud/projects/1234567/servers', 'hetzner:1234567'],
+  ['https://eu.posthog.com/project/12345/dashboard/678', 'posthog:eu.posthog.com/12345'],
+  ['https://posthog.com/docs', null],
+  ['https://search.google.com/search-console?resource_id=sc-domain%3Aexample.org', 'search-console:sc-domain:example.org'],
+  ['https://adsmanager.facebook.com/adsmanager/manage/campaigns?act=987654321', 'meta-ads:987654321'],
+  ['https://business.facebook.com/latest/', null],                            // the suite's home, no account in it
+]) assert.strictEqual(kind(url), want, url);
+for (const bad of ['javascript:alert(1)', 'ftp://example.org/x', 'https://user:pw@vercel.com/acme/landing',
+  'https://eu.posthog.com/project/1?token=abc', 'https://example.org/' + 'a'.repeat(600), 42]) {
+  assert.strictEqual(svc.safeUrl(bad), null, 'accepted ' + String(bad).slice(0, 60));
+}
+
+// A config's bad entries are dropped and counted; the good ones keep their order.
+const listed = svc.serviceList({ services: [
+  { label: 'Figma', url: FIG }, { label: 'Jira' }, { label: 'Bad', url: 'javascript:alert(1)' },
+  { url: 'https://vercel.com/acme/landing' }, 'nonsense',
+], detect: false }, 'x.json');
+assert.deepStrictEqual(listed.items.map((i) => [i.label, !!i.url]), [['Figma', true], ['Jira', false]]);
+assert.deepStrictEqual(listed.errors, ['x.json: пропущено записів — 3']);
+assert.strictEqual(listed.noDetect, true);
+assert.strictEqual(svc.serviceList({ services: Array.from({ length: 30 }, (_, i) => ({ label: 'S' + i })) }, 'y').items.length, svc.SERVICE_CAP);
+assert.deepStrictEqual(svc.serviceList({ nope: 1 }, 'z').errors, ['z: немає масиву services']);
+
+// The docs scan reads what documents the repo, two levels down, and stops there.
+const docsRepo = tmp('sidebar-svc-repo-');
+const put = (root, rel, text) => { fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true }); fs.writeFileSync(path.join(root, rel), text); };
+fs.mkdirSync(path.join(docsRepo, '.git'));
+put(docsRepo, 'README.md', 'Аналітика: https://eu.posthog.com/project/4242/dashboard/1. Дизайн [тут](' + FIG + ').\n'
+  + '```\nhttps://console.hetzner.cloud/projects/999\n```\nі ще https://figma.com та https://vercel.com/docs');
+put(docsRepo, 'docs/ops/deploy.md', 'сервер: https://console.hetzner.cloud/projects/31337/servers');
+put(docsRepo, 'docs/a/b/deep.md', 'https://vercel.com/acme/too-deep');
+put(docsRepo, 'node_modules/x/README.md', 'https://vercel.com/acme/from-a-dependency');
+put(docsRepo, '.github/notes.md', 'https://vercel.com/acme/hidden');
+put(docsRepo, 'package-lock.json', '"https://vercel.com/acme/in-a-lockfile"');
+put(docsRepo, 'docs/secrets.md', 'https://vercel.com/acme/from-secrets');
+put(docsRepo, 'docs/big.md', 'x'.repeat(svc.SERVICE_DOC_BYTES + 10) + ' https://console.hetzner.cloud/projects/777');
+const outside = tmp('sidebar-svc-outside-');
+put(outside, 'README.md', 'https://vercel.com/acme/outside-the-repo');
+try { fs.symlinkSync(outside, path.join(docsRepo, 'linked'), 'junction'); } catch { }   // a link off the repo is not followed
+assert.deepStrictEqual(svc.servicesInDocs(docsRepo).map((f) => f.id + ':' + f.key + ' @ ' + f.from).sort(), [
+  'figma:AbCdEfGhIjKlMnOpQrSt12 @ README.md',
+  'hetzner:31337 @ docs/ops/deploy.md',
+  'posthog:eu.posthog.com/4242 @ README.md',
+]);
+const manyRepo = tmp('sidebar-svc-many-');
+for (let i = 0; i < svc.SERVICE_DOCS + 20; i++) put(manyRepo, 'docs/n' + String(i).padStart(3, '0') + '.md', 'https://eu.posthog.com/project/' + (i + 1));
+assert.strictEqual(svc.servicesInDocs(manyRepo).length, svc.SERVICE_DOCS, 'the scan read past its file budget');
+
+// Written down first, the owner's list before the repo's; the docs fill in what
+// nobody wrote, and a written row with no link gives way to a real one.
+const merged = svc.mergeServices([
+  { items: [{ id: '', label: 'Figma', url: null, note: '' }, { id: '', label: 'Jira', url: null, note: '' },
+    { id: '', label: 'PostHog', url: 'https://eu.posthog.com/project/4242', note: 'моя назва' }] },
+  { items: [{ id: '', label: 'PostHog (repo)', url: 'https://EU.posthog.com/project/4242/', note: '' },
+    { id: '', label: 'Status', url: 'https://status.example.org/', note: '' }] },
+], [
+  { id: 'posthog', name: 'PostHog', key: 'eu.posthog.com/4242', url: 'https://eu.posthog.com/project/4242', note: 'project 4242', from: 'README.md' },
+  { id: 'figma', name: 'Figma', key: 'AbCdEfGhIjKlMnOpQrSt12', url: FIG, note: 'Deck', from: 'README.md' },
+]);
+assert.deepStrictEqual(merged.map((r) => [r.label, r.note, !!r.url]), [
+  ['Jira', '', false],            // no link anywhere: stays, marked as such
+  ['PostHog', 'моя назва', true], // the owner's row for that project beats the repo's and the docs'
+  ['Status', '', true],           // a link no provider knows is kept as written
+  ['Figma', 'Deck', true],        // the docs' link replaced the written placeholder
+]);
+
+// Two projects in one process never see each other's services; the owner's
+// list is found however its path was spelt; a saved edit shows on the next
+// call; a broken file is a row saying so, not an exception.
+const home2 = tmp('sidebar-svc-home2-');
+const two = servicesModule(home2);
+const repoA = tmp('sidebar-svc-a-');
+const repoB = tmp('sidebar-svc-b-');
+fs.mkdirSync(path.join(repoA, '.git'));
+fs.writeFileSync(path.join(repoB, '.git'), 'gitdir: ../elsewhere/.git/worktrees/b\n');   // a worktree's .git is a file
+const aFile = path.join(repoA, '.sidebar-services.json');
+fs.writeFileSync(aFile, JSON.stringify({ services: [{ label: 'Figma', url: FIG }] }));
+const spelt = repoB.split(path.sep).join('/') + '/';
+fs.mkdirSync(path.join(home2, '.claude'));
+fs.writeFileSync(two.PERSONAL_SERVICES, JSON.stringify({ projects: {
+  [process.platform === 'win32' ? spelt.toUpperCase() : spelt]: { services: [{ label: 'Hetzner', url: 'https://console.hetzner.cloud/projects/5' }], detect: false },
+} }));
+assert.deepStrictEqual(two.projectServices(repoA).rows.map((r) => r.label), ['Figma']);
+assert.deepStrictEqual(two.projectServices(repoB).rows.map((r) => r.label), ['Hetzner']);
+assert.deepStrictEqual(two.calls, [['services:' + two.rootKey(repoA), two.SERVICE_TTL]], 'the scan runs per repo, and not where detect is off');
+fs.writeFileSync(aFile, JSON.stringify({ services: [{ label: 'Figma', url: FIG }, { label: 'Jira' }] }));
+fs.utimesSync(aFile, new Date(), new Date(Date.now() + 5000));
+assert.deepStrictEqual(two.projectServices(repoA).rows.map((r) => r.label), ['Figma', 'Jira'], 'an edited config was not seen');
+fs.writeFileSync(aFile, '{"services": [');
+fs.utimesSync(aFile, new Date(), new Date(Date.now() + 10000));
+assert.ok(two.serviceItems({ dir: repoA }).items.some((i) => /не читається як JSON/.test(i.text)), 'a broken config did not say so');
+fs.writeFileSync(aFile, ' '.repeat(70 * 1024));
+fs.utimesSync(aFile, new Date(), new Date(Date.now() + 15000));
+assert.ok(two.serviceItems({ dir: repoA }).items.some((i) => /більший за 64 КБ/.test(i.text)), 'an oversized config was read');
+const bare = tmp('sidebar-svc-bare-');
+const empty = two.serviceItems({ dir: bare });
+assert.strictEqual(empty.count, 0);
+assert.deepStrictEqual(empty.items.map((i) => i.text.trim()), ['нічого не задано й не знайдено в документації', 'додай .sidebar-services.json у корінь репозиторію']);
+assert.ok(empty.items.every((i) => !i.open), 'the empty state must not be clickable');
+
+// ---- and on screen: the block, its rows and what they open ----
+// Real renders of sessions working in those repos, in a home of their own so
+// the owner's own list cannot leak in. One more session sits in a folder above
+// a repo and only edits files inside it: repoOf places it there by st.files,
+// which is why st.files is still collected.
+const svcHome = tmp('sidebar-svc-render-');
+const shown = tmp('sidebar-svc-shown-');
+fs.mkdirSync(path.join(shown, '.git'));
+fs.writeFileSync(path.join(shown, '.sidebar-services.json'), JSON.stringify({ services: [
+  { label: 'Figma', url: FIG, note: 'презентація' }, { label: 'Jira' },
+], detect: false }));
+const parent = tmp('sidebar-svc-parent-');
+const inner = path.join(parent, 'inner');
+fs.mkdirSync(path.join(inner, '.git'), { recursive: true });
+fs.writeFileSync(path.join(inner, '.sidebar-services.json'), JSON.stringify({ services: [
+  { label: 'Hetzner', url: 'https://console.hetzner.cloud/projects/5' },
+], detect: false }));
+// Padded past the 2 KB below which the picker takes a transcript for an empty start.
+const transcript = (file, cwd, edits = []) => fs.writeFileSync(file, [
+  JSON.stringify({ type: 'assistant', cwd, timestamp: at, message: { content: [{ type: 'text', text: 'працюю ' + '.'.repeat(2500) }] } }),
+  ...edits.map((p) => JSON.stringify({ type: 'assistant', cwd, timestamp: at, message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: p } }] } })),
+].join('\n') + '\n');
+const projects = path.join(svcHome, '.claude', 'projects', 'p');
+fs.mkdirSync(projects, { recursive: true });
+const shownFile = path.join(projects, '11111111-1111-1111-1111-111111111111.jsonl');
+const innerFile = path.join(os.tmpdir(), 'sidebar-svc-inner.jsonl');
+transcript(shownFile, shown);
+transcript(innerFile, parent, [path.join(inner, 'src', 'a.js'), path.join(inner, 'src', 'b.js')]);
+function renderIn(mode, file, cols = 76, rows = 30) {
+  const r = spawnSync(process.execPath, [SIDEBAR, ...(mode === 'pick' ? [] : [file])], {
+    env: { ...process.env, HOME: svcHome, USERPROFILE: svcHome, SIDEBAR_ONCE: mode, SIDEBAR_HITS: '1', COLUMNS: String(cols), LINES: String(rows) },
+    encoding: 'utf8',
+  });
+  assert.strictEqual(r.status, 0, 'sidebar.js exited ' + r.status + ': ' + r.stderr.slice(0, 300));
+  const map = JSON.parse(r.stderr);
+  return { lines: r.stdout.replace(/\n+$/, '').split('\n'), hits: map.hits, blocks: map.blocks };
+}
+const serviceRows = (v) => {
+  const top = v.lines.findIndex((l) => /^── СЕРВІСИ/.test(strip(l)));
+  assert.ok(top >= 0, 'no services block:\n' + v.lines.map(strip).join('\n'));
+  const rows = [];
+  for (let i = top + 1; i < v.lines.length && !/^── /.test(strip(v.lines[i])); i++) {
+    if (v.blocks[i] === 'СЕРВІСИ') rows.push({ i, text: strip(v.lines[i]), open: (v.hits[i] || {}).open });
+  }
+  return { rule: strip(v.lines[top]), rows };
+};
+for (const mode of ['1', 'pick']) {
+  const s = serviceRows(renderIn(mode, shownFile, 76, 40));
+  assert.match(s.rule, /^── СЕРВІСИ 2 /, mode + ': ' + s.rule);
+  const figma = s.rows.find((r) => r.text.includes('Figma'));
+  assert.ok(figma && figma.open === FIG, mode + ': the Figma row does not open its file: ' + JSON.stringify(figma));
+  assert.ok(figma.text.includes('www.figma.com/d') && figma.text.includes('презентація'), mode + ': ' + figma.text);
+  const jira = s.rows.find((r) => r.text.includes('Jira'));
+  assert.ok(jira && !jira.open && jira.text.includes('посилання не задано'), mode + ': ' + JSON.stringify(jira));
+  assert.ok(!s.rows.some((r) => r.text.includes('Hetzner')), mode + ': another project leaked in');
+}
+const placed = serviceRows(renderIn('1', innerFile, 76, 40));
+assert.ok(placed.rows.some((r) => r.text.includes('Hetzner') && r.open === 'https://console.hetzner.cloud/projects/5'),
+  'a session above the repo was not placed in it by the files it touched: ' + JSON.stringify(placed.rows));
+for (const [cols, rows] of [[40, 12], [50, 20], [60, 22], [76, 30], [120, 50]]) {
+  for (const mode of ['1', 'pick']) {
+    const v = renderIn(mode, shownFile, cols, rows);
+    const where = 'services ' + mode + ' ' + cols + 'x' + rows;
+    assert.ok(v.lines.length <= rows, where + ': painted ' + v.lines.length + ' rows');
+    for (const [i, line] of v.lines.entries()) assert.ok(width(line) <= cols - 1, where + ': row ' + (i + 1) + ' is too wide');
+    for (const [i, hit] of Object.entries(v.hits)) {
+      assert.ok(v.blocks[i], where + ': clickable row ' + (+i + 1) + ' belongs to no block');
+      if (hit.open === FIG) assert.strictEqual(v.blocks[i], 'СЕРВІСИ', where + ': the Figma click sits in ' + v.blocks[i]);
+    }
+  }
+}
+for (const d of [docsRepo, manyRepo, outside, repoA, repoB, bare, home2, svcHome, shown, parent]) fs.rmSync(d, { recursive: true, force: true });
+fs.rmSync(innerFile, { force: true });
 
 // ---- blocks stand apart, and the space between them still scrolls ----
 // The blank row is pushed by layout rather than by panel, which is the one
@@ -429,7 +634,7 @@ assert.strictEqual(
 // The result arrives in a later message carrying only the id of the call it
 // answers, so matching it on anything else marks the wrong agent finished and
 // leaves one that is still running looking done.
-const ing = eval('(function(){' + src.match(/const TEMP = [\s\S]*?\nfunction ingest[\s\S]*?\n\}/)[0] + '\nreturn { newState, ingest } })()');
+const ing = eval('(function(){' + src.match(/const NOISE = [\s\S]*?\nfunction ingest[\s\S]*?\n\}/)[0] + '\nreturn { newState, ingest } })()');
 const quotaState = ing.newState();
 const quota = { primary: { used_percent: 48, window_minutes: 10080 } };
 for (const payload of [
