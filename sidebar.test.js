@@ -220,11 +220,13 @@ assert.ok(!opens.some((o) => /\.(js|md)$/.test(o)), 'a file the session wrote is
 const servicesSrc = src.match(/\nconst SERVICE_FILE = [\s\S]*?\nfunction serviceItems[\s\S]*?\n\}\n/)[0];
 function servicesModule(home) {
   const calls = [];
-  const mod = eval('(function(){ const HOME = home; const dim = (s) => s; const sgr = (c, s) => s;'
+  const mod = eval('(function(){ const HOME = home; const dim = (s) => s; const sgr = (c, s) => s; const later = new Map();'
     + ' const slow = (key, ttl, run) => { calls.push([key, ttl]); return run(); };'
-    + src.match(/\nconst FENCE = .*\n/)[0] + src.match(/\nfunction readSlice[\s\S]*?\n\}\n/)[0] + servicesSrc
+    + src.match(/\nconst FENCE = .*\n/)[0] + src.match(/\nfunction readSlice[\s\S]*?\n\}\n/)[0]
+    + src.match(/\nfunction ago[\s\S]*?\n\}\n/)[0] + servicesSrc
     + '\nreturn { safeUrl, matchService, serviceList, servicesInDocs, mergeServices, projectServices, serviceItems, rootKey,'
-    + ' PERSONAL_SERVICES, SERVICE_CAP, SERVICE_DOCS, SERVICE_DOC_BYTES, SERVICE_TTL }; })()');
+    + ' scanAndSave, refreshServices, PERSONAL_SERVICES, FOUND_FILE, FOUND_LOCK, SERVICE_CAP, SERVICE_DOCS, SERVICE_DOC_BYTES,'
+    + ' SCAN_RETRY, LOCK_STALE }; })()');
   return { ...mod, calls };
 }
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
@@ -326,10 +328,44 @@ fs.writeFileSync(two.PERSONAL_SERVICES, JSON.stringify({ projects: {
 } }));
 assert.deepStrictEqual(two.projectServices(repoA).rows.map((r) => r.label), ['Figma']);
 assert.deepStrictEqual(two.projectServices(repoB).rows.map((r) => r.label), ['Hetzner']);
-assert.deepStrictEqual(two.calls, [['services:' + two.rootKey(repoA), two.SERVICE_TTL]], 'the scan runs per repo, and not where detect is off');
+assert.deepStrictEqual(two.calls, [['services:' + two.rootKey(repoA), two.SCAN_RETRY]], 'one scan for repoA, none where detect is off');
+
+// ---- the docs are scanned once per repo, and the answer is kept ----
+// The owner asked for one automatic pass (2026-09-13): a scanned repo is read
+// back from ~/.claude/sidebar-services-found.json by every pane after the first,
+// an empty answer included, and only «Оновити сервіси» scans it again.
+two.projectServices(repoA);
+assert.strictEqual(two.calls.length, 1, 'a scanned repo was scanned again');
+const saved = JSON.parse(fs.readFileSync(two.FOUND_FILE, 'utf8'));
+assert.deepStrictEqual(saved.projects[two.rootKey(repoA)].found, [], 'the empty answer was not saved');
+assert.ok(!(two.rootKey(repoB) in saved.projects), 'a repo with detect off was scanned or saved');
+assert.ok(!fs.existsSync(two.FOUND_LOCK), 'the lock outlived the scan');
+const nextPane = servicesModule(home2);                     // a pane started later: nothing in memory, the same home
+assert.strictEqual(nextPane.projectServices(repoA).pending, false);
+assert.deepStrictEqual(nextPane.calls, [], 'a second pane scanned a repo that already has a saved scan');
+put(repoA, 'README.md', 'аналітика: https://eu.posthog.com/project/4242/dashboard/1');
+assert.deepStrictEqual(nextPane.projectServices(repoA).rows.map((r) => r.label), ['Figma'], 'the docs changed and something rescanned on its own');
+const manual = fs.readFileSync(aFile, 'utf8');
+nextPane.refreshServices(repoA);
+assert.deepStrictEqual(nextPane.projectServices(repoA).rows.map((r) => [r.label, r.from || '']), [['Figma', ''], ['PostHog', 'README.md']],
+  'refresh did not bring the new link in, or lost the written one');
+assert.strictEqual(fs.readFileSync(aFile, 'utf8'), manual, 'refresh wrote to a manual list');
+// One scanning pane at a time: a held lock stops a scan, a dead pane's lock is taken over.
+const repoC = tmp('sidebar-svc-c-');
+fs.mkdirSync(path.join(repoC, '.git'));
+put(repoC, 'README.md', 'https://console.hetzner.cloud/projects/77');
+fs.writeFileSync(two.FOUND_LOCK, 'another pane');
+assert.strictEqual(two.scanAndSave(repoC, false), false, 'scanned while another pane held the lock');
+assert.strictEqual(two.projectServices(repoC).pending, true, 'a busy lock must leave the repo waiting, not scanned');
+const longAgo = new Date(Date.now() - two.LOCK_STALE - 1000);
+fs.utimesSync(two.FOUND_LOCK, longAgo, longAgo);
+assert.strictEqual(two.scanAndSave(repoC, false), true, 'the lock of a pane that died was never taken over');
+assert.ok(!fs.existsSync(two.FOUND_LOCK));
+assert.deepStrictEqual(two.projectServices(repoC).rows.map((r) => r.label), ['Hetzner']);
+assert.ok(two.rootKey(repoA) in JSON.parse(fs.readFileSync(two.FOUND_FILE, 'utf8')).projects, 'saving one repo lost another');
 fs.writeFileSync(aFile, JSON.stringify({ services: [{ label: 'Figma', url: FIG }, { label: 'Jira' }] }));
 fs.utimesSync(aFile, new Date(), new Date(Date.now() + 5000));
-assert.deepStrictEqual(two.projectServices(repoA).rows.map((r) => r.label), ['Figma', 'Jira'], 'an edited config was not seen');
+assert.deepStrictEqual(two.projectServices(repoA).rows.map((r) => r.label), ['Figma', 'Jira', 'PostHog'], 'an edited config was not seen');
 fs.writeFileSync(aFile, '{"services": [');
 fs.utimesSync(aFile, new Date(), new Date(Date.now() + 10000));
 assert.ok(two.serviceItems({ dir: repoA }).items.some((i) => /не читається як JSON/.test(i.text)), 'a broken config did not say so');
@@ -337,10 +373,17 @@ fs.writeFileSync(aFile, ' '.repeat(70 * 1024));
 fs.utimesSync(aFile, new Date(), new Date(Date.now() + 15000));
 assert.ok(two.serviceItems({ dir: repoA }).items.some((i) => /більший за 64 КБ/.test(i.text)), 'an oversized config was read');
 const bare = tmp('sidebar-svc-bare-');
+// The first frame is still searching (slow() answers on a later one), and offers
+// no refresh of a scan that has not happened; the next shows the empty answer.
+const searching = two.serviceItems({ dir: bare });
+assert.deepStrictEqual(searching.items.map((i) => i.text.trim()), ['шукаю в документації проєкту…', 'додай .sidebar-services.json у корінь репозиторію']);
 const empty = two.serviceItems({ dir: bare });
 assert.strictEqual(empty.count, 0);
-assert.deepStrictEqual(empty.items.map((i) => i.text.trim()), ['нічого не задано й не знайдено в документації', 'додай .sidebar-services.json у корінь репозиторію']);
-assert.ok(empty.items.every((i) => !i.open), 'the empty state must not be clickable');
+assert.deepStrictEqual(empty.items.map((i) => i.text.trim()), [
+  'нічого не задано й не знайдено в документації', 'додай .sidebar-services.json у корінь репозиторію', '↻ Оновити сервіси  · скановано щойно',
+]);
+assert.ok(empty.items.every((i) => !i.open), 'the empty state must open nothing');
+assert.strictEqual(empty.items[2].refresh, bare, 'the refresh row does not carry its repo');
 
 // ---- and on screen: the block, its rows and what they open ----
 // Real renders of sessions working in those repos, in a home of their own so
@@ -401,6 +444,46 @@ for (const mode of ['1', 'pick']) {
 const placed = serviceRows(renderIn('1', innerFile, 76, 40));
 assert.ok(placed.rows.some((r) => r.text.includes('Hetzner') && r.open === 'https://console.hetzner.cloud/projects/5'),
   'a session above the repo was not placed in it by the files it touched: ' + JSON.stringify(placed.rows));
+
+// A pane that finds a saved scan shows it, with the doc that named each link and
+// how old the scan is, and writes nothing; its refresh row carries the repo.
+const foundFile = path.join(svcHome, '.claude', 'sidebar-services-found.json');
+const scanned = tmp('sidebar-svc-scanned-');
+fs.mkdirSync(path.join(scanned, '.git'));
+fs.writeFileSync(foundFile, JSON.stringify({ projects: { [two.rootKey(scanned)]: { at: Date.now() - 3 * 3600 * 1000, found: [
+  { id: 'posthog', name: 'PostHog', url: 'https://eu.posthog.com/project/4242', note: 'project 4242', from: 'docs/analytics.md' },
+] } } }));
+const untouched = fs.statSync(foundFile).mtimeMs;
+const scannedFile = path.join(os.tmpdir(), 'sidebar-svc-scanned.jsonl');
+transcript(scannedFile, scanned);
+const scannedView = renderIn('1', scannedFile, 76, 40);
+const scannedRows = serviceRows(scannedView).rows;
+assert.ok(scannedRows.some((r) => r.open === 'https://eu.posthog.com/project/4242' && r.text.includes('docs/analytics.md')), JSON.stringify(scannedRows));
+const refreshRow = scannedRows.find((r) => r.text.includes('Оновити сервіси'));
+assert.ok(refreshRow && /скановано 3 год тому/.test(refreshRow.text), 'no refresh row with the scan age: ' + JSON.stringify(scannedRows));
+assert.strictEqual(scannedView.hits[refreshRow.i].refresh, scanned, 'the refresh row does not carry its repo in the click map');
+assert.strictEqual(fs.statSync(foundFile).mtimeMs, untouched, 'a pane that found a saved scan rewrote the file');
+
+// Two real panes, one after the other, on a repo nobody has scanned: the first
+// scans and saves while it runs, the second only reads.
+const fresh = tmp('sidebar-svc-fresh-');
+fs.mkdirSync(path.join(fresh, '.git'));
+put(fresh, 'README.md', 'сервер: https://console.hetzner.cloud/projects/4040');
+const freshFile = path.join(os.tmpdir(), 'sidebar-svc-fresh.jsonl');
+transcript(freshFile, fresh);
+const runPane = () => spawnSync(process.execPath, [SIDEBAR, freshFile], {
+  env: { ...process.env, HOME: svcHome, USERPROFILE: svcHome, COLUMNS: '76', LINES: '40' }, encoding: 'utf8', timeout: 3000,
+});
+runPane();
+const firstScan = JSON.parse(fs.readFileSync(foundFile, 'utf8')).projects;
+assert.deepStrictEqual((firstScan[two.rootKey(fresh)] || {}).found, [
+  { id: 'hetzner', name: 'Hetzner', url: 'https://console.hetzner.cloud/projects/4040', note: 'project 4040', from: 'README.md' },
+], 'the first pane did not save its scan');
+assert.ok(firstScan[two.rootKey(scanned)], 'saving one repo lost another');
+const afterFirst = fs.statSync(foundFile).mtimeMs;
+runPane();
+assert.strictEqual(fs.statSync(foundFile).mtimeMs, afterFirst, 'the second pane scanned and saved again');
+assert.ok(!fs.existsSync(foundFile + '.lock'), 'a pane left its lock behind');
 for (const [cols, rows] of [[40, 12], [50, 20], [60, 22], [76, 30], [120, 50]]) {
   for (const mode of ['1', 'pick']) {
     const v = renderIn(mode, shownFile, cols, rows);
@@ -413,8 +496,8 @@ for (const [cols, rows] of [[40, 12], [50, 20], [60, 22], [76, 30], [120, 50]]) 
     }
   }
 }
-for (const d of [docsRepo, manyRepo, outside, repoA, repoB, bare, home2, svcHome, shown, parent]) fs.rmSync(d, { recursive: true, force: true });
-fs.rmSync(innerFile, { force: true });
+for (const d of [docsRepo, manyRepo, outside, repoA, repoB, repoC, bare, home2, svcHome, shown, parent, scanned, fresh]) fs.rmSync(d, { recursive: true, force: true });
+for (const f of [innerFile, scannedFile, freshFile]) fs.rmSync(f, { force: true });
 
 // ---- blocks stand apart, and the space between them still scrolls ----
 // The blank row is pushed by layout rather than by panel, which is the one
@@ -664,6 +747,12 @@ const mouseSelection = eval('(function(){ let cursor = 0, hover = -1; const sess
 assert.deepStrictEqual(mouseSelection({ pick: 'live-codex.jsonl' }), { chosen: 'live-codex.jsonl', picked: false }, 'one click on a live session switches the pane');
 assert.deepStrictEqual(mouseSelection({ session: 0 }), { chosen: 'picker.jsonl', picked: false }, 'picker clicks use the same selection action');
 assert.deepStrictEqual(mouseSelection({ pick: true }), { chosen: null, picked: true }, 'the session header still opens the picker');
+const refreshClick = eval('(function(){ let cursor = 0, hover = -1, chartMode = 0; const CHART_MODES = [0]; const sessions = [];'
+  + 'let hit, refreshed = null; function hitAt() { return hit; } function pinTo() {} function openPicker() {} function openExternal() {}'
+  + 'function onWheel() {} function refreshServices(dir) { refreshed = dir; }'
+  + src.match(/\nfunction onMouse[\s\S]*?\n\}\n/)[0]
+  + '\nreturn (next) => { hit = next; refreshed = null; const redraw = onMouse(0, 2, true); return { refreshed, redraw }; }; })()');
+assert.deepStrictEqual(refreshClick({ refresh: '/work/landing' }), { refreshed: '/work/landing', redraw: true }, 'a click on «Оновити сервіси» did not rescan');
 const agent = ing.newState();
 for (const line of [
   { content: [{ type: 'tool_use', id: 'a1', name: 'Agent', input: { description: 'first' } }] },

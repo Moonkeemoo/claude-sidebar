@@ -4,6 +4,14 @@
 it reads `~/.claude/projects/*/*.jsonl` and writes nothing except a Warp tab config. Any change that
 makes it write to a transcript is wrong.
 
+One exception, asked for by the owner on 2026-09-13 ("Ну або робити один автоматичний прогон"):
+`~/.claude/sidebar-services-found.json` keeps the result of the one docs scan per project that fills
+СЕРВІСИ, so that panes do not rescan, and `.lock` beside it lets only one pane scan at a time. Only
+that scan and a click on «Оновити сервіси» write it, off the render path, through a temp file and a
+rename. It holds provider links and the doc that named them: never a transcript, never a repo's file,
+never the owner's own `~/.claude/sidebar-services.json`, which the pane only reads. Anything else the
+pane starts writing is the same mistake as writing to a transcript.
+
 Commits, comments and docs in English. The strings the pane prints are Ukrainian, because that is
 the language its user reads — keep them Ukrainian.
 
@@ -99,7 +107,9 @@ to press the key and report what happened rather than asserting it works.
 
 ## Where the pieces live
 
-The pane runs from this repo; nothing is installed into `~/.claude`. The one optional integration is
+The pane runs from this repo; nothing is installed into `~/.claude`. Two files there belong to
+СЕРВІСИ: the owner's `sidebar-services.json`, read only, and the pane's own
+`sidebar-services-found.json`, the exception above. The one optional integration is
 the `.active-session.json` block inside the user's `statusline.js`, which lives in the separate
 `claude-config` repo — README explains the contract. Without it the pane falls back to an mtime scan
 and still works, so never assume the file exists.

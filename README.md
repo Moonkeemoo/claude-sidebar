@@ -59,8 +59,9 @@ three hours, then the plan, media, project services and links of the session it 
   дашборди цього проєкту — клік відкриває
 
   Figma  www.figma.com/design/AbCdEfGhIjKlMnOp…  лендінг
-  PostHog  eu.posthog.com/project/12345  project 12345
+  PostHog  eu.posthog.com/project/12345  project 12345  · docs/analytics.md
   Jira  посилання не задано
+  ↻ Оновити сервіси  · скановано 2 дн тому
 
 ── ЛІНКИ 17 ─────────────────────────────────────────
   адреси, які сесія назвала — клік відкриває
@@ -129,8 +130,14 @@ Only `http`/`https` links are shown, and never one with a password or a token in
 one that is not JSON, and entries that break those rules become a yellow row in the block saying so;
 the pane itself goes on drawing. A saved edit to either file shows on the next frame.
 
-Then comes what the project's docs link to: README, CLAUDE.md and the `docs/` tree, two levels down at
-most, 80 files and the first 256 KB of each. Fenced examples are skipped. Nothing is read from
+Then comes what the project's docs link to, found by one scan per repo. The first pane that shows a
+repo reads its docs off the render path and saves what it found — finding nothing included — in
+`~/.claude/sidebar-services-found.json`. Every pane after it, and the same pane restarted, reads that file
+instead of the docs. The last row of the block, `↻ Оновити сервіси · скановано 3 дн тому`, scans the repo
+again when clicked; nothing else does, and it never touches the lists you wrote. Two panes never scan at
+once: a lock file beside the saved one stops the second, and a lock left by a pane that died is taken
+over after 30 seconds. The scan reads README, CLAUDE.md and the `docs/` tree, two levels down at most,
+80 files and the first 256 KB of each. Fenced examples are skipped. Nothing is read from
 `node_modules`, a dot-folder, a symlink, a lockfile, or a file named like a secret. A link counts only
 when it names a project inside a service the pane knows: a Vercel project (not Vercel's docs), a Figma
 file, a board or issue on an `atlassian.net` tenant, a Hetzner Cloud project, a PostHog Cloud project,
@@ -826,8 +833,10 @@ existing file. Insert one stray line into a renderer and it goes red.
 
 ## What it deliberately does not do
 
-It reads `~/.claude/projects/*/*.jsonl` and nothing else. It never writes to a transcript and never
-talks to Claude.
+Of what Claude Code keeps, it reads the transcripts in `~/.claude/projects/*/*.jsonl`. It never writes to
+a transcript or to a repo, and never talks to Claude. Besides what `--install` writes, the one file it
+writes on its own is `~/.claude/sidebar-services-found.json`, with a lock beside it while a scan runs:
+the saved answer of the one docs scan per project that fills СЕРВІСИ.
 
 Only the newest 3 MB of a transcript is parsed. Sessions reach 100 MB, and reading one whole on every
 switch costs a second and the memory to match — hence the `+` on truncated counts.

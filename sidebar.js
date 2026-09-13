@@ -713,15 +713,27 @@ function projectOf(s, st) {
 // repo; `~/.claude/sidebar-services.json`, keyed by the repo's absolute path, is
 // the owner's own list for repos that should not carry one, and comes first.
 // Both are two small files a stat can check, so they are read on the render
-// path and a saved edit shows on the next frame. The docs are a walk, and go
-// through slow().
+// path and a saved edit shows on the next frame. The pane never writes them.
+//
+// The docs are scanned once per repo, not over and over: the owner asked for one
+// automatic pass (2026-09-13). The first pane to see a repo scans it off the
+// render path and saves the answer — an empty one too — in
+// `~/.claude/sidebar-services-found.json`, and every pane after it, this one
+// restarted included, reads that. «Оновити сервіси» is the only way to scan the
+// same repo again. That file and its lock are the one exception to this pane
+// writing nothing but a Warp tab config; see CLAUDE.md.
 const SERVICE_FILE = '.sidebar-services.json';
 const PERSONAL_SERVICES = path.join(HOME, '.claude', 'sidebar-services.json');
+const FOUND_FILE = path.join(HOME, '.claude', 'sidebar-services-found.json');
+const FOUND_LOCK = FOUND_FILE + '.lock';
 const SERVICE_CAP = 20;               // rows per project, every source together
 const SERVICE_BYTES = 64 * 1024;      // a config bigger than this is a mistake, not a list
-const SERVICE_TTL = 30 * 1000;        // how old the docs scan may get
 const SERVICE_DOCS = 80;              // files read per scan
 const SERVICE_DOC_BYTES = 256 * 1024; // bytes read of any one of them
+const FOUND_BYTES = 1024 * 1024;      // the saved scans of every repo together
+const FOUND_PROJECTS = 100;           // repos kept there, the most recently scanned
+const SCAN_RETRY = 5 * 1000;          // until a repo has a saved scan: how soon to try again after a busy lock
+const LOCK_STALE = 30 * 1000;         // a lock older than this belongs to a pane that died mid-scan
 
 // http(s) only, no user:password@, nothing in the query that reads like a
 // credential: a row is a link a person may be shown, not a key.
@@ -793,20 +805,18 @@ const canonUrl = (u) => u.protocol + '//' + u.host.toLowerCase() + u.pathname.re
 // Windows paths compare case-blind and with either slash; a trailing one means nothing.
 const rootKey = (p) => { const r = path.resolve(p).replace(/[\\/]+$/, ''); return process.platform === 'win32' ? r.toLowerCase() : r; };
 
+const unbom = (text) => (text.charCodeAt(0) === 0xfeff ? text.slice(1) : text); // Notepad's byte-order mark
+
 // A file read only when its stat changed. Absent is no list and no error.
 const serviceFiles = new Map();
-function readServiceFile(file) {
+function readServiceFile(file, max = SERVICE_BYTES) {
   let st; try { st = fs.statSync(file); } catch { return null; }
   const hit = serviceFiles.get(file);
   if (hit && hit.mtime === st.mtimeMs && hit.size === st.size) return hit.value;
   let value;
-  if (!st.isFile() || st.size > SERVICE_BYTES) value = { error: 'не файл або більший за ' + SERVICE_BYTES / 1024 + ' КБ' };
+  if (!st.isFile() || st.size > max) value = { error: 'не файл або більший за ' + max / 1024 + ' КБ' };
   else {
-    try {
-      let text = fs.readFileSync(file, 'utf8');
-      if (text.charCodeAt(0) === 0xfeff) text = text.slice(1); // Notepad's byte-order mark
-      value = { json: JSON.parse(text) };
-    } catch { value = { error: 'не читається як JSON' }; }
+    try { value = { json: JSON.parse(unbom(fs.readFileSync(file, 'utf8'))) }; } catch { value = { error: 'не читається як JSON' }; }
   }
   serviceFiles.set(file, { mtime: st.mtimeMs, size: st.size, value });
   return value;
@@ -898,16 +908,116 @@ function mergeServices(lists, found) {
   return rows.filter((r) => r.url || !linked.has(name(r))).slice(0, SERVICE_CAP);
 }
 
+// ---- the one scan per repo, saved ----
+// `{ projects: { <repo key>: { at, found: [{ id, name, url, note, from }] } } }`.
+// A repo with an entry has been scanned, `found: []` included, and is not scanned
+// again until someone asks. What is read back is checked again as if the docs
+// had just said it: a hand-edited or damaged file cannot put a link on screen
+// that no provider recognises.
+function savedScan(key) {
+  const v = readServiceFile(FOUND_FILE, FOUND_BYTES);
+  const all = v && v.json && typeof v.json.projects === 'object' && v.json.projects;
+  const entry = all && Object.hasOwn(all, key) ? all[key] : null;
+  if (!entry || typeof entry !== 'object' || !Array.isArray(entry.found)) return null;
+  const found = entry.found.filter((f) => {
+    const u = f && typeof f.from === 'string' && f.from.length < 200 && safeUrl(f.url);
+    const m = u && matchService(u);
+    return m && m.id === f.id;
+  }).map((f) => ({ id: f.id, name: matchService(new URL(f.url)).name, url: f.url, note: typeof f.note === 'string' ? f.note.slice(0, 60) : '', from: f.from }));
+  return { at: Number(entry.at) || 0, found: found.slice(0, SERVICE_CAP) };
+}
+
+// Straight from disk, under the lock: another pane may have saved a moment ago.
+function loadFound() {
+  try {
+    if (fs.statSync(FOUND_FILE).size <= FOUND_BYTES) {
+      const raw = JSON.parse(unbom(fs.readFileSync(FOUND_FILE, 'utf8')));
+      if (raw && typeof raw.projects === 'object' && raw.projects) return { projects: raw.projects };
+    }
+  } catch { }
+  return { projects: {} };   // absent or damaged: the next save replaces it whole
+}
+
+// Temp file and rename, so a pane that dies mid-write leaves the old file whole;
+// the most recently scanned FOUND_PROJECTS repos are what is kept.
+function writeFound(reg) {
+  const keys = Object.keys(reg.projects).sort((a, b) => (Number(reg.projects[b].at) || 0) - (Number(reg.projects[a].at) || 0));
+  for (const k of keys.slice(FOUND_PROJECTS)) delete reg.projects[k];
+  fs.mkdirSync(path.dirname(FOUND_FILE), { recursive: true });
+  const tmp = FOUND_FILE + '.' + process.pid + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(reg, null, 1));
+  fs.renameSync(tmp, FOUND_FILE);
+}
+
+// One scanning pane at a time, across every pane on the machine: the lock is a
+// file only one of them can create, and one left behind by a pane that died is
+// taken over once it is LOCK_STALE old.
+function lockFound() {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.mkdirSync(path.dirname(FOUND_LOCK), { recursive: true });
+      fs.writeFileSync(FOUND_LOCK, String(process.pid), { flag: 'wx' });
+      return true;
+    } catch (e) {
+      if (e.code !== 'EEXIST') return false;
+      try {
+        if (Date.now() - fs.statSync(FOUND_LOCK).mtimeMs < LOCK_STALE) return false;
+        fs.unlinkSync(FOUND_LOCK);
+      } catch { return false; }
+    }
+  }
+  return false;
+}
+const unlockFound = () => { try { fs.unlinkSync(FOUND_LOCK); } catch { } };
+
+// Under the lock: re-read what is saved, scan unless the repo is already there or
+// this is a refresh, and save the answer. An empty answer is saved too — that is
+// what stops an empty repo being scanned by every pane that opens on it. A busy
+// lock is not a failure: the other pane's answer arrives through the file.
+function scanAndSave(dir, refresh) {
+  const key = rootKey(dir);
+  if (!lockFound()) return false;
+  try {
+    const reg = loadFound();
+    const had = Object.hasOwn(reg.projects, key) && reg.projects[key] && Array.isArray(reg.projects[key].found);
+    if (had && !refresh) return true;
+    const seen = new Set();
+    const found = servicesInDocs(dir)
+      .filter((f) => !seen.has(f.id + ':' + f.key) && seen.add(f.id + ':' + f.key))
+      .slice(0, SERVICE_CAP)
+      .map(({ id, name, url, note, from }) => ({ id, name, url, note, from }));
+    reg.projects[key] = { at: Date.now(), found };
+    writeFound(reg);
+    return true;
+  } finally { unlockFound(); }
+}
+
+// «Оновити сервіси»: the same scan, this time over whatever was saved. The manual
+// lists are separate files and are not touched.
+function refreshServices(dir) {
+  const job = 'services:' + rootKey(dir);
+  if ((later.get(job) || {}).busy) return;
+  later.delete(job);
+  slow(job, SCAN_RETRY, () => scanAndSave(dir, true));
+}
+
 // Everything the block needs for one repo. The key is the repo, so a pane that
-// moves to another project never shows the last one's services.
+// moves to another project never shows the last one's services. slow() is asked
+// only while the repo has no saved scan; once it has one, nothing here scans.
 function projectServices(dir) {
+  const key = rootKey(dir);
   const lists = [personalServices(dir), (() => {
     const v = readServiceFile(path.join(dir, SERVICE_FILE));
     return v && (v.error ? { items: [], errors: [SERVICE_FILE + ' ' + v.error] } : serviceList(v.json, SERVICE_FILE));
   })()].filter(Boolean);
   const detect = !lists.some((l) => l.noDetect);
-  const found = detect ? slow('services:' + rootKey(dir), SERVICE_TTL, () => servicesInDocs(dir)) : [];
-  return { rows: mergeServices(lists, found || []), errors: lists.flatMap((l) => l.errors), pending: detect && !found };
+  const saved = detect ? savedScan(key) : null;
+  if (detect && !saved) slow('services:' + key, SCAN_RETRY, () => scanAndSave(dir, false));
+  const busy = !!(later.get('services:' + key) || {}).busy;
+  return {
+    rows: mergeServices(lists, saved ? saved.found : []), errors: lists.flatMap((l) => l.errors),
+    detect, pending: detect && !saved, busy, at: saved ? saved.at : 0,
+  };
 }
 
 // A row shows where it goes before it says anything else about it — the start of
@@ -926,11 +1036,16 @@ function serviceItems(info) {
   });
   const count = items.length;
   for (const e of s.errors) items.push({ text: '  ' + sgr('33', e) });
-  if (!items.length) {
-    items.push(s.pending
-      ? { text: dim('  шукаю в документації проєкту…') }
-      : { text: dim('  нічого не задано й не знайдено в документації') },
-    { text: dim('  додай ' + SERVICE_FILE + ' у корінь репозиторію') });
+  if (s.pending) items.push({ text: dim('  шукаю в документації проєкту…') });
+  else if (!count) items.push({ text: dim('  нічого не задано й не знайдено в документації') });
+  if (!count) items.push({ text: dim('  додай ' + SERVICE_FILE + ' у корінь репозиторію') });
+  // The one way to scan a repo again, with how old the saved scan is.
+  if (s.detect && !s.pending) {
+    const when = s.at ? ago(Date.now() - s.at) : '';
+    items.push({
+      refresh: info.dir,
+      text: '  ' + dim('↻ ') + (s.busy ? 'оновлюю…' : 'Оновити сервіси') + (when ? dim('  · скановано ' + (when === 'зараз' ? 'щойно' : when + ' тому')) : ''),
+    });
   }
   return { items, count };
 }
@@ -2019,6 +2134,7 @@ function panel(out, key, label, items, room, count, focus, empty, note) {
     if (it.chart) rowHits[out.length] = { chart: true };
     if (it.session != null) rowHits[out.length] = { session: it.session };
     if (it.pick) rowHits[out.length] = { pick: it.pick };
+    if (it.refresh) rowHits[out.length] = { refresh: it.refresh };
     blockAt[out.length] = key;
     out.push(clip(it.text, W()));
   }
@@ -3122,6 +3238,7 @@ function onMouse(btn, y, press) {
   if (!hit) return false;
   if (hit.chart) { chartMode = (chartMode + 1) % CHART_MODES.length; return true; }
   if (hit.open) { openExternal(hit.open); return false; }
+  if (hit.refresh) { refreshServices(hit.refresh); return true; }   // the row says «оновлюю…» until the scan lands
   if (hit.pick) {
     if (typeof hit.pick === 'string') pinTo({ path: hit.pick });
     else openPicker();
